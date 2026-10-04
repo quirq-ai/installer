@@ -74,3 +74,7 @@ desktop updater evaluation (v2).
 ## Working here
 
 See [AGENTS.md](AGENTS.md).
+
+## Licence
+
+[Apache License 2.0](LICENSE).
