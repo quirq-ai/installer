@@ -39,6 +39,8 @@ jobs:
       - run: python -m pytest -q -p no:cacheprovider
       - name: a script resolves canary to a commit and digest (V0-INS-01 done-when)
         run: python tools/contract_check.py --config .qq/infra-config
+      - name: a test install follows channels/canary through xo-space's install.sh (V0-INS-02 done-when, offline half)
+        run: python tools/canary_install_drill.py --config .qq/infra-config
       - name: the published manifest resolves, or is not published yet
         # 0 = resolved, 3 = release has not moved a channel yet; anything else is a broken manifest.
         run: |

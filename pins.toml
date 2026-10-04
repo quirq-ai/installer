@@ -10,3 +10,10 @@ commit = "15b9ebbc77520881b4ab8ff8faf98750061c1d46"   # main after #3 (V0-REL-02
 [infra-config]
 source = "https://github.com/quirq-ai/infra-config"
 commit = "a698da40d6ef9a3d79ccd9393417f094ec935123"
+
+# The consumer whose install.sh the canary install drill runs (V0-INS-02). The script is fetched
+# at this commit and must match the sha256.
+[xo-space]
+source = "https://github.com/quirq-ai/xo-space"
+commit = "d70c48aed3dda27ee73fbc44d9b00cd60073356c"   # main after #211
+install_sh_sha256 = "77f9fd75fb5abce8eaf8f834cd9fddee5ed111135f70805637755abca7a06ae4"
