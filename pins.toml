@@ -1,0 +1,12 @@
+# Other qq repos this one reads, by pinned commit (never copied).
+# TODO(expert): let rollers move these pins.
+
+# Writes channels.json. Keep in step with pyproject.toml's `contract` extra.
+[release]
+source = "https://github.com/quirq-ai/release"
+commit = "15b9ebbc77520881b4ab8ff8faf98750061c1d46"   # main after #3 (V0-REL-02)
+
+# The config release reads, at release's own pins.toml commit.
+[infra-config]
+source = "https://github.com/quirq-ai/infra-config"
+commit = "a698da40d6ef9a3d79ccd9393417f094ec935123"
