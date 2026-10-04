@@ -73,7 +73,7 @@ real `install.sh` through two canary promotions and a rollback; presubmit runs i
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-INS-01 | Channel manifest: resolve a channel to a commit and digest | #2 | in review |
+| V0-INS-01 | Channel manifest: resolve a channel to a commit and digest | #2 | merged; live resolve waits on the first canary (V0-REL-03) |
 | V0-INS-02 | xo-space test installs follow canary | #3 | in review; live half waits on suraj (release executor identity, canary environment) and V0-REL-03 |
 
 Out of scope for v0: test installs following dev (v1); real installs following a channel and a
