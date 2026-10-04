@@ -1,0 +1,7 @@
+# Exact versions for CI; requirements-ci.txt is generated from this with:
+#   uv pip compile --generate-hashes --universal --python-version 3.14 requirements-ci.in -o requirements-ci.txt
+# Keep in step with pyproject.toml (tests check it).
+pytest==9.1.1
+pyyaml==6.0.3
+setuptools==84.0.0
+jsonschema==4.26.0

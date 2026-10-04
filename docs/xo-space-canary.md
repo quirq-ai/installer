@@ -1,84 +1,98 @@
 # xo-space test installs on canary (V0-INS-02)
 
-How a test install of xo-space follows `channels/canary` instead of `main`, with no xo-space code
+How a test install of xo-space follows the canary channel instead of `main`, with no xo-space code
 change. **Only in quirq's research and test environments, never on real users' machines.** Real
 installs keep following `main` until v2.
 
-## How it works
+## The rule: check, then run
 
-release's executor moves `channels/canary` in quirq-ai/xo-space: a branch naming the commit the
-canary channel ships (the same commit `channels.json` names, with its artifact digest). xo-space's
-`install.sh` already takes the branch to follow from `QUIRQ_SOURCE_REF` (default `main`): it clones
-with `--branch "$QUIRQ_SOURCE_REF"`, and on later runs fetches that branch and resets a clean
-checkout to it. So pointing `QUIRQ_SOURCE_REF` at `channels/canary` is all it takes.
+A test install runs only a checkout that `qqinstall` has already checked is exactly the commit
+release's `channels.json` names for xo-space canary. Nothing asks a git server what a branch or tag
+name means, and nothing starts before the check passes.
 
-## Install a test machine on canary
+## Install or update a test machine
 
-In a fresh directory on the test machine (a test install must be its own checkout, see below):
+Once, on the test machine (Python 3.11+ and git):
 
 ```sh
-curl -fsSL https://quirq.ai/install | QUIRQ_SOURCE_REF=channels/canary sh
+python3 -m venv ~/.qqinstall && ~/.qqinstall/bin/pip install \
+  "qqinstall @ git+https://github.com/quirq-ai/installer@<reviewed installer commit>"
 ```
 
-The variable goes on `sh`, not on `curl`. Per xo-space's INSTALLATION.md the bootstrap behind the
-short URL downloads `install.sh` and runs it under bash, so the variable reaches install.sh, and
-install.sh's own restart banner prints the command this way. The bootstrap's source is not in the
-xo-space repo and could not be read from here, so which ref it fetches `install.sh` from is
-unverified (inferred: `main`). TODO(expert): confirm against the served bootstrap.
-
-Do **not** run `QUIRQ_SOURCE_REF=channels/canary ./install.sh` from inside an xo-space checkout:
-install.sh then runs that checkout in place and never fetches, whatever the variable says. Without
-the short URL, pipe the script from a fresh directory so it takes the managed path:
-`QUIRQ_SOURCE_REF=channels/canary bash < /path/to/install.sh`.
-
-To update, run the same command again. Each run moves the install to whatever canary names now,
-including back to an older commit after a rollback.
-
-Check what is installed against the channel (exit 0 = exactly canary's commit, no local changes;
-1 = stale or edited; 3 = no canary published yet):
+Then, in a directory used only for this test install, every time you install or update:
 
 ```sh
-pip install "qqinstall @ git+https://github.com/quirq-ai/installer@<commit>"
-qqinstall verify --repo xo-space --channel canary --checkout ./xo-space
+~/.qqinstall/bin/qqinstall checkout --repo xo-space --channel canary \
+  --remote https://github.com/quirq-ai/xo-space.git --dest ./xo-space \
+  && (cd xo-space && ./install.sh)
 ```
+
+- `qqinstall checkout` reads `channels.json`, clones `./xo-space` the first time (fetches on
+  later runs), detaches it at exactly that commit by its id, then verifies it: the commit, no
+  tracked, untracked or hidden changes, and `origin` is the URL given. Only exit `0` lets
+  `install.sh` run.
+- `./install.sh` run from inside a checkout runs that checkout in place and never runs git, so
+  what starts is what was verified, and install.sh itself is canary's copy too.
+- Running the same command again follows promotions and rollbacks alike.
+- Exit `1` (local changes) leaves the checkout as it is; `3` means nothing is published for
+  canary yet; `2` is an error. Treat anything but `0` as "do not run" (Python itself exits `1` if
+  qqinstall cannot start).
+- To check a running install later: `qqinstall verify --repo xo-space --channel canary
+  --remote https://github.com/quirq-ai/xo-space.git --checkout ./xo-space`.
+
+## Do not use these for canary
+
+- **`curl -fsSL https://quirq.ai/install | QUIRQ_SOURCE_REF=channels/canary sh`.** install.sh's
+  update step is `git fetch origin channels/canary` then `reset --hard FETCH_HEAD`. git resolves
+  that short name as `refs/channels/canary` first, then a **tag** `channels/canary`, and only then
+  the branch, so whoever can create such a ref decides what runs. Branch and tag rulesets cannot
+  cover `refs/channels/*`. The drill shows a planted ref being installed this way. The whole chain
+  also verifies nothing: the bootstrap behind the short URL (its source is not in the xo-space repo
+  and could not be read), the `install.sh` it fetches (inferred from `main`, no digest), uv's
+  installer piped to `sh`, and `requirements.txt` without hashes. The server starts before
+  anything could be checked.
+- **The in-app updaters** (the Setup tab's `self_update.py` and `POST /app/update` →
+  `cowork-update.sh`). They fetch by the same short name, and they only fast-forward: after a
+  rollback the Setup tab says "up to date", applying says "diverged", and `/app/update` says
+  "Already up to date" and exits 0, all while staying on the rolled-back commit. A checkout made by
+  `qqinstall checkout` is detached, so they have no branch to follow; update with the command above.
+- **`QUIRQ_APP_DIR` to put a canary install beside a `main` one.** In the same launch directory it
+  shares the `main` install's `.quirq` state, projects root and port 5002. Use its own directory.
 
 ## Things to know
 
-- **A test install must be its own checkout.** install.sh never moves a clean checkout that is on
-  another branch: an existing install on `main` stays on `main` even with
-  `QUIRQ_SOURCE_REF=channels/canary` set, and install.sh then **starts the server on `main`
-  anyway**, after printing "leaving it as is". Use a fresh directory, or `QUIRQ_APP_DIR`, and
-  check with `qqinstall verify`.
-- **Update by re-running install.sh, never the in-app updaters, to follow rollbacks.** Both in-app
-  paths follow the checkout's current branch, so a canary install picks up newer canaries, but they
-  only fast-forward and stay **silently** on a rolled-back commit: the Setup tab's status
-  (`services/cowork_agent/self_update.py`, `check_update_status`) reports "up to date", applying
-  reports "diverged", and `POST /app/update` (`cowork-update.sh`, `git pull --ff-only`) says
-  "Already up to date" and exits 0. Re-running install.sh resets to the rolled-back commit.
-  (Read from the code at the pinned xo-space commit and checked by the PR reviewer against the
-  real module; the drill covers install.sh only.)
-- **Local edits stop updates.** install.sh skips the update for a checkout with local changes;
-  `qqinstall verify` exits 1 for one.
-- **The installer script itself** is whatever the bootstrap serves, not necessarily canary's copy;
-  only the code it installs follows the channel.
-- **What is trusted.** The branch `channels/canary` in xo-space is the source of truth for the
-  install; `channels.json` is the record `qqinstall verify` checks against. Both are written only
-  by release's executor once the rulesets and identity below exist. A git install is identified by
-  its commit; the digest in `channels.json` is for artifact installs (v1/v2).
+- `verify` trusts the checkout's own `.git` (filters, excludes, `core.fileMode`): it checks an
+  install the operator controls, not a hostile tree. Replace refs are ignored. It counts files
+  install.sh or the server create only if xo-space's `.gitignore` does not list them.
+- The digest in `channels.json` is for artifact installs (v1/v2); a git install is identified by
+  its commit.
+- The trust root is `channels.json` on release's `release-state` branch. TODO(suraj): until only
+  the release executor can push `release-state` (release pushes it with the workflow's
+  `GITHUB_TOKEN` today, so a ruleset cannot single the executor out; the audit routes this to
+  release), anyone with push on quirq-ai/release can change what canary resolves to.
+- Reads go through GitHub's CDN and can lag a channel move by a few minutes;
+  `--at <release-state commit>` reads a fixed version and is refused unless that commit is on
+  release's `release-state` branch.
 
 ## Status
 
-`tools/canary_install_drill.py` is the offline half of the done-when, and presubmit runs it: it
-runs xo-space's real `install.sh` (pinned commit and sha256 in `pins.toml`) with
-`QUIRQ_SOURCE_REF=channels/canary` against a local repo whose `channels/canary` branch release's
-own executor moves, through two promotions and a rollback, and checks with `qqinstall verify`
-after each step. It also checks that an install on `main` is left alone.
+`tools/canary_install_drill.py` is the offline half of the done-when, and presubmit runs it,
+against a local stand-in repo holding xo-space's real `install.sh` (pinned commit and sha256 in
+`pins.toml`), with release's own executor moving canary:
+
+1. a fresh `qqinstall checkout` lands on canary's commit, and that checkout's own install.sh
+   would run it in place (its `resolve_repo_dir` gives managed mode off, so no git);
+2. after a promotion the install reads as stale until `checkout` runs again;
+3. a planted tag and a planted `refs/channels/canary` change nothing (and, for contrast, the
+   `QUIRQ_SOURCE_REF` flow installs the planted commit);
+4. after a rollback `checkout` goes back;
+5. a checkout with local changes is left alone.
+
+It does not run the rest of install.sh (uv, venv, server), the bootstrap, or anything on GitHub
+(release's github backend, raw.githubusercontent.com).
 
 The live half, a test install in the canary environment following the channel, waits on:
 
-- TODO(suraj): the release executor identity (its GitHub App and `QQ_RELEASE_TOKEN`). Until it
-  exists release records channel moves but does not write `channels/canary` in xo-space, so
-  `QUIRQ_SOURCE_REF=channels/canary` has no branch to clone.
-- V0-REL-03 (daily canary pipeline): the first canary promotion.
-- TODO(suraj): name the canary test environment (which machines), and put `release-state` and
-  `channels/*` under rulesets that only the release executor can write.
+- V0-REL-03: release's first canary promotion, which publishes `channels.json`.
+- TODO(suraj): name the canary test environment (which machines).
+- TODO(suraj): protect `release-state` so only the release executor can push it (see above).

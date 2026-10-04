@@ -15,7 +15,10 @@ The file appears only after the first channel move, so "absent" is a normal stat
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -25,8 +28,10 @@ SCHEMA = "qq-channels/1"
 RELEASE_REPO = "quirq-ai/release"
 STATE_BRANCH = "release-state"
 FILE = "channels.json"
-# The moving record: what the channels name now.
-DEFAULT_SOURCE = f"https://raw.githubusercontent.com/{RELEASE_REPO}/{STATE_BRANCH}/{FILE}"
+RELEASE_GIT = f"https://github.com/{RELEASE_REPO}"
+# The moving record: what the channels name now. `refs/heads/` asks for the branch, so a tag that
+# happens to share its name is never served instead.
+DEFAULT_SOURCE = f"https://raw.githubusercontent.com/{RELEASE_REPO}/refs/heads/{STATE_BRANCH}/{FILE}"
 # TODO(expert): raw.githubusercontent.com is GitHub-specific; read it through a `backend` field
 # (github now, launchpad later) once a second backend exists.
 MAX_BYTES = 1 << 20
@@ -62,10 +67,37 @@ class Channel:
 
 
 def source_at(commit: str) -> str:
-    """The manifest as it was at one `release-state` commit: a reproducible read."""
+    """The manifest as it was at one commit of release: a reproducible read. Only trust it after
+    `check_on_release_state`: raw serves any commit of the repo (other branches, PR heads, and
+    possibly fork commits through GitHub's shared object store)."""
     if not COMMIT.fullmatch(commit):
         raise InstallerError(f"--at must be a full 40-character commit SHA, not {commit!r}")
     return f"https://raw.githubusercontent.com/{RELEASE_REPO}/{commit}/{FILE}"
+
+
+def check_on_release_state(commit: str, remote: str = RELEASE_GIT) -> None:
+    """Raise unless `commit` is on `remote`'s release-state branch (the branch's tip or an ancestor)."""
+    source_at(commit)   # the same SHA check
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    def git(*argv, cwd):
+        try:
+            return subprocess.run(["git", "--no-replace-objects", *argv], cwd=cwd, env=env,
+                                  capture_output=True, text=True)
+        except OSError as e:
+            raise InstallerError(f"could not run git: {e}") from None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        if git("init", "-q", cwd=tmp).returncode:
+            raise InstallerError("could not create a scratch git repository")
+        fetched = git("fetch", "--quiet", "--no-tags", "--filter=blob:none", remote,
+                      f"+refs/heads/{STATE_BRANCH}:refs/qq/{STATE_BRANCH}", cwd=tmp)
+        if fetched.returncode:
+            raise InstallerError(f"could not read the {STATE_BRANCH} branch of {remote}")
+        if git("merge-base", "--is-ancestor", commit, f"refs/qq/{STATE_BRANCH}", cwd=tmp).returncode:
+            raise InstallerError(f"{commit[:12]} is not on {remote}'s {STATE_BRANCH} branch; refusing to "
+                                 "read a manifest from it")
 
 
 def check_name(kind: str, value: str) -> str:

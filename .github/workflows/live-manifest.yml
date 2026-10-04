@@ -1,0 +1,33 @@
+# Reads release's live channels.json. Scheduled and not required, so release's live state never
+# blocks a PR here; a red run means the published manifest is broken or unreachable.
+name: live-manifest
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  live-manifest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+      - run: python -m pip install --quiet --no-deps --no-build-isolation --require-hashes -r requirements-ci.txt && python -m pip install --quiet --no-deps --no-build-isolation -e .
+      - name: the published manifest resolves, or release has not published one yet
+        # 0 = valid manifest. 3 = not found, which is fine only while release has no release-state
+        # branch at all; a 404 with the branch present means a renamed or private repo, or a bad URL.
+        run: |
+          rc=0; qqinstall show || rc=$?
+          if [ "$rc" -eq 0 ]; then exit 0; fi
+          [ "$rc" -eq 3 ] || exit 1
+          heads=0; git ls-remote --exit-code --heads https://github.com/quirq-ai/release release-state || heads=$?
+          [ "$heads" -eq 2 ]

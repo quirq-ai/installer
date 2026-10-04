@@ -17,3 +17,9 @@ commit = "a698da40d6ef9a3d79ccd9393417f094ec935123"
 source = "https://github.com/quirq-ai/xo-space"
 commit = "d70c48aed3dda27ee73fbc44d9b00cd60073356c"   # main after #211
 install_sh_sha256 = "77f9fd75fb5abce8eaf8f834cd9fddee5ed111135f70805637755abca7a06ae4"
+
+# release's own dependency, at release's pin (its pyproject.toml). CI installs it by this commit,
+# without dependencies; its PyPI dependencies are hashed in requirements-ci.txt.
+[gardener]
+source = "https://github.com/quirq-ai/gardener"
+commit = "bad853c0464e0e56ae894ff3795cbb3e5e24ba48"

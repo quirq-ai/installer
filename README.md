@@ -23,58 +23,66 @@ executor writes it, after every channel move. `qqinstall` reads it and resolves 
 
 ```sh
 pip install "qqinstall @ git+https://github.com/quirq-ai/installer@<commit>"
-qqinstall resolve --repo xo-space --channel canary                 # commit, digest, generation
-qqinstall resolve --repo xo-space --channel canary --format env    # QQ_CHANNEL_COMMIT=... for scripts
-qqinstall resolve --repo xo-space --channel canary --at <release-state commit>   # reproducible read
-qqinstall verify  --repo xo-space --channel canary --checkout ./xo-space         # is this install it?
-qqinstall show                                                     # every channel
+qqinstall resolve  --repo xo-space --channel canary                 # commit, digest, generation
+qqinstall resolve  --repo xo-space --channel canary --format env    # QQ_CHANNEL_COMMIT=... for scripts
+qqinstall resolve  --repo xo-space --channel canary --at <release-state commit>   # a fixed read
+qqinstall checkout --repo xo-space --channel canary --remote <git URL> --dest ./xo-space   # put an install on it
+qqinstall verify   --repo xo-space --channel canary --checkout ./xo-space [--remote <git URL>]
+qqinstall show                                                      # every channel
 ```
 
-Exit codes, which scripts should decide on (never on the text): `0` resolved (or, for `verify`, the
-checkout is exactly the channel's commit with no local changes), `1` `verify` mismatch, `2` error
-(unreadable or invalid manifest, bad arguments), `3` not published yet. The manifest appears only
-after release's first channel move, so until the daily canary pipeline (V0-REL-03) ships one,
-every resolve exits `3`.
+Exit codes, which scripts should decide on (never on the text): `0` resolved (or, for `checkout`
+and `verify`, the checkout is exactly the channel's commit with no local changes), `1` mismatch or
+local changes, `2` error (unreadable or invalid manifest, bad arguments, broken checkout or remote),
+`3` not published yet. Treat anything but `0` as "not verified": Python itself exits `1` if
+qqinstall cannot start. The manifest appears only after release's first channel move, so until the
+daily canary pipeline (V0-REL-03) ships one, every resolve exits `3`.
 
-**Limits.** `verify` checks the checkout's top-level commit and that its tree has no tracked,
-untracked (non-ignored) or hidden (skip-worktree, assume-unchanged) changes. It does not check the
-digest (that is for artifact installs), which remote the checkout came from, or submodules, and it trusts
-the checkout's own `.git` (its filters, excludes and `core.fileMode` can hide changes or run code),
-so it checks an install you control, not a hostile tree. The default URL is served through
-GitHub's CDN, which can lag a channel move by a few minutes; use `--at <release-state commit>`
-when a read must be exact. Exit `3` also covers a 404 from a renamed or private release repo, so
-"not published" lasting past the first canary means look at the URL.
+`checkout` clones or fetches, then detaches the checkout at the manifest's commit by its id (never
+by a branch or tag name the remote could point elsewhere) and verifies it.
+
+**Limits.** `verify` checks the checkout's top-level commit (replace refs ignored), that its tree
+has no tracked, untracked (non-ignored) or hidden (skip-worktree, assume-unchanged) changes, and,
+with `--remote`, its `origin`. It does not check the digest (that is for artifact installs) or
+submodules, and it trusts the checkout's own `.git` (its filters, excludes and `core.fileMode` can
+hide changes or run code), so it checks an install you control, not a hostile tree. The default
+URL (`refs/heads/release-state`, so a same-named tag is never served) goes through GitHub's CDN,
+which can lag a channel move by a few minutes; `--at <commit>` reads a fixed version and is
+refused unless that commit is on release's `release-state` branch. Exit `3` also covers a 404 from
+a renamed or private release repo; the scheduled `live-manifest` workflow tells the two apart.
 
 Every field is checked before it is used: the schema, a 40-hex commit, a `sha256:` digest, a
-positive generation, names, no duplicate keys, a 1 MiB cap, https only (redirects too). Anything unexpected exits `2`, never `1`. One bad
-entry anywhere and the whole file is refused.
+positive generation, names, no duplicate keys, a 1 MiB cap, https only (redirects too). Anything
+unexpected exits `2`, never `1`. One bad entry anywhere and the whole file is refused.
 
 **What it trusts.** The commit and digest come from the manifest, never from the artifact or
-checkout being checked. The manifest is trusted because only release's executor can write
-`release-state`. TODO(suraj): put `release-state` under the `qq-release-refs` ruleset (or its own)
-so only the release executor identity can push it; until then anyone with push on quirq-ai/release
-can change what a channel resolves to. TODO(expert): once `channels/<name>` refs are written
-(release executor identity), cross-check the manifest's commit against the ref.
+checkout being checked. The manifest is trusted because only release's executor should write
+`release-state`. TODO(suraj): today release pushes `release-state` with its workflows'
+`GITHUB_TOKEN`, so a ruleset cannot tell the executor from any other workflow in release; it needs
+release to push with the executor App's token and a ruleset whose only bypass is that App. Until
+then anyone with push on quirq-ai/release can change what a channel resolves to.
 
 `tools/contract_check.py` is the done-when: release's own code, at the commit in `pins.toml`, ships
 two canaries and rolls one back, and after each move `qqinstall resolve` must name the right commit
-and digest (and exit `3` before the first move). Presubmit runs it, and also resolves the live
-manifest, accepting `0` or `3`.
+and digest (and exit `3` before the first move). Presubmit runs it. The live manifest is read by the
+scheduled, non-required `live-manifest` workflow, so release's live state never blocks a PR here.
 
 ## xo-space test installs on canary (V0-INS-02)
 
-A test install follows canary with xo-space's existing override, no code change:
-`curl -fsSL https://quirq.ai/install | QUIRQ_SOURCE_REF=channels/canary sh`, in a fresh directory,
-in quirq's research and test environments only. Details, caveats and what the live half waits on:
-[docs/xo-space-canary.md](docs/xo-space-canary.md). `tools/canary_install_drill.py` runs xo-space's
-real `install.sh` through two canary promotions and a rollback; presubmit runs it.
+A test install checks before it runs, with no xo-space code change: `qqinstall checkout` puts
+`./xo-space` on exactly canary's commit and verifies it, then that checkout's own `./install.sh`
+runs it in place. Do not use `curl | sh` with `QUIRQ_SOURCE_REF` for canary: it installs whatever
+the name `channels/canary` resolves to, and nothing in that chain is verified. Commands, caveats
+and what the live half waits on: [docs/xo-space-canary.md](docs/xo-space-canary.md).
+`tools/canary_install_drill.py` runs the flow against a local stand-in repo holding xo-space's real
+`install.sh`, through two promotions, planted refs and a rollback; presubmit runs it.
 
 ## v0 status
 
 | Item | What | PR | State |
 |---|---|---|---|
 | V0-INS-01 | Channel manifest: resolve a channel to a commit and digest | #2 | merged; live resolve waits on the first canary (V0-REL-03) |
-| V0-INS-02 | xo-space test installs follow canary | #3 | in review; live half waits on suraj (release executor identity, canary environment) and V0-REL-03 |
+| V0-INS-02 | xo-space test installs follow canary | #3, audit fixes #5 | merged; offline drill passes; live half waits on V0-REL-03 and suraj (canary machines, `release-state` protection) |
 
 Out of scope for v0: test installs following dev (v1); real installs following a channel and a
 desktop updater evaluation (v2).
