@@ -7,6 +7,8 @@ name = "qqinstall"
 version = "0.1.0"
 description = "quirq infra (qq) installer: resolve a release channel to a commit and digest."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = []
 
