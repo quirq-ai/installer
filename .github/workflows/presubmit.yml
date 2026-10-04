@@ -1,5 +1,6 @@
 # Required check for this repo. Hand-written until infra-config generates builders for infra repos.
-# Runs on every PR and in the merge queue, so it verifies the exact merge result.
+# Runs on every PR and in the merge queue, so it verifies the exact merge result; also on pushes to
+# main, so main's own state is recorded.
 name: presubmit
 on:
   pull_request:
@@ -14,7 +15,7 @@ defaults:
 jobs:
   presubmit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -22,5 +23,24 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.14"
+      - name: read the infra-config pin
+        id: pin
+        run: python -c "import tomllib; print('commit=' + tomllib.load(open('pins.toml', 'rb'))['infra-config']['commit'])" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: quirq-ai/infra-config
+          ref: ${{ steps.pin.outputs.commit }}
+          path: .qq/infra-config
+          persist-credentials: false
+      # pytest by exact version; release (the channels.json writer) by pinned commit.
+      - run: python -m pip install --quiet -e ".[test,contract]"
       - name: every action is pinned by commit SHA
         run: python tools/check_pins.py
+      - run: python -m pytest -q -p no:cacheprovider
+      - name: a script resolves canary to a commit and digest (V0-INS-01 done-when)
+        run: python tools/contract_check.py --config .qq/infra-config
+      - name: the published manifest resolves, or is not published yet
+        # 0 = resolved, 3 = release has not moved a channel yet; anything else is a broken manifest.
+        run: |
+          rc=0; qqinstall show || rc=$?
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]
