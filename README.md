@@ -39,7 +39,11 @@ qqinstall cannot start. The manifest appears only after release's first channel 
 daily canary pipeline (V0-REL-03) ships one, every resolve exits `3`.
 
 `checkout` clones or fetches, then detaches the checkout at the manifest's commit by its id (never
-by a branch or tag name the remote could point elsewhere) and verifies it.
+by a branch or tag name the remote could point elsewhere) and verifies it. It records the
+manifest's generation in the checkout's git config (`qqinstall.<repo>/<channel>.generation`) and
+refuses (exit `2`) a later `channels.json` with a lower generation, so a replayed old manifest
+cannot move an install back; a rollback is a new move with a higher generation and goes through.
+`resolve`, `verify` and `show` keep no state and cannot make that check (TODO(expert)).
 
 **Limits.** `verify` checks the checkout's top-level commit (replace refs ignored), that its tree
 has no tracked, untracked (non-ignored) or hidden (skip-worktree, assume-unchanged) changes, and,

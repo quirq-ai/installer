@@ -116,20 +116,41 @@ def cmd_resolve(args) -> int:
     return OK
 
 
+def _generation_key(ch: Channel) -> str:
+    # Names never contain "/", so the subsection is unambiguous; git splits the key at the last dot.
+    return f"qqinstall.{ch.repo}/{ch.channel}.generation"
+
+
+def _never_backwards(checkout: str, ch: Channel) -> None:
+    """Refuse a manifest older than the last one this checkout was put on (a replayed channels.json)."""
+    seen = _git(checkout, "config", "--local", "--get", _generation_key(ch))
+    if seen.returncode == 1:
+        return  # never recorded: a checkout made before this check, or by hand
+    try:
+        last = int(seen.stdout.strip()) if seen.returncode == 0 else None
+    except ValueError:
+        last = None
+    if last is None:
+        raise InstallerError(f"could not read {_generation_key(ch)} in {checkout}")
+    if ch.generation < last:
+        raise InstallerError(f"{ch.repo} {ch.channel} manifest is generation {ch.generation}, older than "
+                             f"generation {last} already installed in {checkout}; refusing to go back")
+
+
 def cmd_checkout(args) -> int:
     ch = manifest.resolve(_source(args), args.repo, args.channel)
     dest = Path(args.dest)
-    if not dest.exists():
-        if _git(None, "clone", "--quiet", "--no-checkout", "--no-tags", "--", args.remote, str(dest)).returncode:
-            raise InstallerError(f"could not clone {args.remote} into {dest}")
-    else:
+    if dest.exists():
         _top_level(str(dest))
         _origin_is(str(dest), args.remote)
+        _never_backwards(str(dest), ch)
         if _local_changes(str(dest)):
             print(f"{dest} has local changes; leaving it as it is", file=sys.stderr)
             return MISMATCH
         if _git(str(dest), "fetch", "--quiet", "--no-tags", "origin").returncode:
             raise InstallerError(f"could not fetch from {args.remote}")
+    elif _git(None, "clone", "--quiet", "--no-checkout", "--no-tags", "--", args.remote, str(dest)).returncode:
+        raise InstallerError(f"could not clone {args.remote} into {dest}")
     # The commit by its id, never a branch or tag name the remote could point elsewhere.
     want = f"{ch.commit}^{{commit}}"
     if _git(str(dest), "cat-file", "-e", want).returncode:
@@ -138,11 +159,17 @@ def cmd_checkout(args) -> int:
             raise InstallerError(f"{args.remote} does not have {ch.repo} {ch.channel}'s commit {ch.commit[:12]}")
     if _git(str(dest), "checkout", "--quiet", "--detach", ch.commit).returncode:
         raise InstallerError(f"could not check out {ch.commit[:12]} in {dest}")
-    return check(str(dest), ch, args.remote)
+    rc = check(str(dest), ch, args.remote)
+    if rc == OK and _git(str(dest), "config", "--local", _generation_key(ch), str(ch.generation)).returncode:
+        raise InstallerError(f"could not record generation {ch.generation} in {dest}")
+    return rc
 
 
 def cmd_verify(args) -> int:
     ch = manifest.resolve(_source(args), args.repo, args.channel)
+    # TODO(expert): resolve/verify/show keep no state, so they cannot tell a replayed (older)
+    # channels.json from the current one; only `checkout` refuses to go back. Decide whether
+    # verify should also read the checkout's recorded generation.
     return check(args.checkout, ch, args.remote)
 
 

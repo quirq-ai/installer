@@ -37,8 +37,8 @@ def run(capsys, *argv):
     return rc
 
 
-def co(capsys, write, remote, dest, sha, name="m.json"):
-    src = write(doc(app={"canary": entry(commit=sha)}), name=name)
+def co(capsys, write, remote, dest, sha, name="m.json", generation=1):
+    src = write(doc(app={"canary": entry(commit=sha, generation=generation)}), name=name)
     return run(capsys, "checkout", "--repo", "app", "--channel", "canary", "--source", src,
                "--remote", remote, "--dest", str(dest))
 
@@ -117,3 +117,27 @@ def test_check_on_release_state(tmp_path):
 def test_default_source_names_the_branch():
     assert "/refs/heads/release-state/channels.json" in manifest.DEFAULT_SOURCE
     assert D1
+
+
+def test_checkout_refuses_an_older_generation(upstream, tmp_path, write, capsys):
+    d, good, _ = upstream
+    remote = f"file://{d}"
+    dest = tmp_path / "install"
+    assert co(capsys, write, remote, dest, good[0], name="g1.json", generation=1) == cli.OK
+    assert co(capsys, write, remote, dest, good[1], name="g2.json", generation=2) == cli.OK
+    assert git(dest, "config", "--local", "qqinstall.app/canary.generation") == "2"
+    # a replayed generation-1 manifest is refused and the checkout stays put
+    assert co(capsys, write, remote, dest, good[0], name="g1b.json", generation=1) == cli.ERROR
+    assert git(dest, "rev-parse", "HEAD") == good[1]
+    # a rollback is a new move with a higher generation, so it goes through
+    assert co(capsys, write, remote, dest, good[0], name="g3.json", generation=3) == cli.OK
+    assert git(dest, "rev-parse", "HEAD") == good[0]
+
+
+def test_unreadable_recorded_generation_is_an_error(upstream, tmp_path, write, capsys):
+    d, good, _ = upstream
+    remote = f"file://{d}"
+    dest = tmp_path / "install"
+    assert co(capsys, write, remote, dest, good[0]) == cli.OK
+    git(dest, "config", "--local", "qqinstall.app/canary.generation", "nope")
+    assert co(capsys, write, remote, dest, good[1], name="m2.json", generation=5) == cli.ERROR

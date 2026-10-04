@@ -33,7 +33,8 @@ Then, in a directory used only for this test install, every time you install or 
   `install.sh` run.
 - `./install.sh` run from inside a checkout runs that checkout in place and never runs git, so
   what starts is what was verified, and install.sh itself is canary's copy too.
-- Running the same command again follows promotions and rollbacks alike.
+- Running the same command again follows promotions and rollbacks alike. It refuses (exit `2`)
+  a `channels.json` older than the last one this checkout was put on.
 - Exit `1` (local changes) leaves the checkout as it is; `3` means nothing is published for
   canary yet; `2` is an error. Treat anything but `0` as "do not run" (Python itself exits `1` if
   qqinstall cannot start).
