@@ -3,7 +3,8 @@
 Replace refs are ignored, so a commit is always its real tree; fsmonitor and hooks are off. git
 still trusts a checkout's own .git (its filters, excludes and core.fileMode can run code or hide
 changes, grafts and a commit-graph can rewrite history), so questions about history (`on_branch`)
-are asked of a scratch repo fetched fresh from the remote, never of the checkout. Inherited GIT_*
+are asked of a scratch repo fetched fresh from the remote, never of the checkout, with the user's
+and the system's git config ignored too. Inherited GIT_*
 variables are dropped so git looks where it is told, not wherever GIT_DIR points, except the CA
 settings some networks need. A transfer slower than 1 KB/s for a minute is abandoned, and no one
 command may run longer than TIMEOUT.
@@ -24,9 +25,13 @@ TIMEOUT = 900  # seconds; a clone of xo-space takes well under a minute
 BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 
 
-def run(checkout: str | None, *argv: str) -> subprocess.CompletedProcess:
+def run(checkout: str | None, *argv: str, isolated: bool = False) -> subprocess.CompletedProcess:
+    """`isolated` also ignores the user's and the system's git config (insteadOf rewrites, includes),
+    for a scratch repo whose answer must depend on the remote alone."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k in ENV_KEPT}
     env["GIT_TERMINAL_PROMPT"] = "0"
+    if isolated:
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
     where = ["-C", checkout] if checkout else []
     try:
         return subprocess.run(["git", *SAFE, *where, *argv], capture_output=True, text=True, env=env,
@@ -48,11 +53,11 @@ def on_branch(commit: str, remote: str, branch: str) -> bool:
     fetched fresh (blobs left out), so nothing in a local .git can change the answer."""
     check_branch_name(branch)
     with tempfile.TemporaryDirectory() as tmp:
-        if run(tmp, "init", "-q").returncode:
+        if run(tmp, "init", "-q", "--template=", isolated=True).returncode:
             raise InstallerError("could not create a scratch git repository")
         if run(tmp, "fetch", "--quiet", "--no-tags", "--filter=blob:none", remote,
-               f"+refs/heads/{branch}:refs/qq/tip").returncode:
+               f"+refs/heads/{branch}:refs/qq/tip", isolated=True).returncode:
             raise InstallerError(f"could not read the {branch} branch of {remote}")
         # 0 = an ancestor; 1 = not; anything else (128: the commit is not in the branch's history at
         # all, so the fetch never brought it) also means it is not on the branch.
-        return run(tmp, "merge-base", "--is-ancestor", commit, "refs/qq/tip").returncode == 0
+        return run(tmp, "merge-base", "--is-ancestor", commit, "refs/qq/tip", isolated=True).returncode == 0

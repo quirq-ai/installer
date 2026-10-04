@@ -93,23 +93,38 @@ def _bad_links(checkout: str, commit: str) -> list[str]:
         # a submodule (commit) is left out: its path is an empty directory in this checkout
     if not links:
         return []
+    for path in [*dirs, *files, *links]:
+        parts = path.split("/")
+        if path.startswith("/") or any(p in ("", ".", "..") or p.lower() == ".git" for p in parts):
+            raise InstallerError(f"{commit[:12]} has a tree entry no checkout could hold: {path!r}")
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp).resolve()
-        for d in sorted(dirs):
-            (root / d).mkdir(parents=True, exist_ok=True)
-        for f in files:
-            (root / f).touch()
-        for path, oid in links.items():
-            target = _git(checkout, "cat-file", "blob", oid)
-            if target.returncode != 0:
-                raise InstallerError(f"could not read the symlink {path} in {commit[:12]}")
-            try:
-                os.symlink(target.stdout, root / path)
-            except (OSError, ValueError):
-                raise InstallerError(f"could not recreate the symlink {path} in {commit[:12]}") from None
+
+        def inside(p: Path) -> Path:
+            # Every parent is a directory this function made, never a link, so nothing lands outside.
+            if Path(os.path.realpath(p.parent)) != root and root not in Path(os.path.realpath(p.parent)).parents:
+                raise InstallerError(f"{commit[:12]}: {p.relative_to(root)} would land outside the scratch tree")
+            return p
+
+        try:
+            for d in sorted(dirs):
+                inside(root / d).mkdir(exist_ok=True)
+            for f in files:
+                inside(root / f).touch(exist_ok=False)
+            for path, oid in sorted(links.items()):
+                target = _git(checkout, "cat-file", "blob", oid)
+                if target.returncode != 0:
+                    raise InstallerError(f"could not read the symlink {path} in {commit[:12]}")
+                os.symlink(target.stdout, inside(root / path))
+        except (OSError, ValueError) as e:
+            raise InstallerError(f"could not recreate the tree of {commit[:12]}: {e}") from None
         bad = []
         for path in sorted(links):
-            real = Path(os.path.realpath(root / path))
+            try:   # strict: every step must exist, as it would have to in the checkout
+                real = Path(os.path.realpath(root / path, strict=True))
+            except (OSError, RuntimeError):
+                bad.append(path)
+                continue
             rel = real.relative_to(root).as_posix() if real == root or root in real.parents else None
             if rel is None or (rel != "." and rel not in files and rel not in dirs) or rel in links:
                 bad.append(path)

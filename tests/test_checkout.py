@@ -1,4 +1,5 @@
 import subprocess
+import tempfile
 
 import pytest
 
@@ -193,17 +194,35 @@ def test_symlinks_must_stay_inside(upstream, tmp_path, write, capsys):
     assert not (tmp_path / "b").exists()
 
 
-def test_origin_is_compared_before_insteadof(upstream, tmp_path, write, capsys, monkeypatch):
-    d, good, _ = upstream
+def global_insteadof(monkeypatch, tmp_path, url, to):
     home = tmp_path / "home"
-    home.mkdir()
-    remote = "https://example.invalid/app.git"
-    (home / ".gitconfig").write_text(f'[url "file://{d}"]\n\tinsteadOf = {remote}\n')
+    home.mkdir(exist_ok=True)
+    (home / ".gitconfig").write_text(f'[url "{to}"]\n\tinsteadOf = {url}\n')
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+
+def test_origin_is_compared_before_insteadof(upstream, tmp_path, write, capsys, monkeypatch):
+    d, good, _ = upstream
+    mirror = tmp_path / "mirror"
+    subprocess.run(["git", "clone", "-q", "--bare", str(d), str(mirror)], check=True)
+    remote = f"file://{d}"
+    global_insteadof(monkeypatch, tmp_path, remote, f"file://{mirror}")
     dest = tmp_path / "install"
     assert co(capsys, write, remote, dest, good[0]) == cli.OK
     assert co(capsys, write, remote, dest, good[1], name="m2.json") == cli.OK
+
+
+def test_branch_check_ignores_the_users_git_config(upstream, tmp_path, write, capsys, monkeypatch):
+    d, _, evil = upstream
+    fake = tmp_path / "fake"
+    subprocess.run(["git", "clone", "-q", "--bare", str(d), str(fake)], check=True)
+    git(fake, "update-ref", "refs/heads/main", evil)
+    remote = f"file://{d}"
+    global_insteadof(monkeypatch, tmp_path, remote, f"file://{fake}")
+    dest = tmp_path / "install"
+    assert co(capsys, write, remote, dest, evil) == cli.ERROR
+    assert not dest.exists()
 
 
 def test_git_keeps_only_ca_settings(monkeypatch):
@@ -255,7 +274,7 @@ def link_commit(repo, links):
 
 
 @pytest.mark.parametrize("target", [".git/config", "venv/bin/payload", "/etc/passwd", "../outside",
-                                    "install.sh", "docs/../../x"])
+                                    "install.sh", "docs/../../x", "data/../server.py"])
 def test_links_must_name_the_tree(upstream, tmp_path, write, capsys, target):
     d, good, _ = upstream
     remote = f"file://{d}"
@@ -290,3 +309,26 @@ def test_cleanup_never_touches_a_dest_it_did_not_clone(upstream, tmp_path, write
     monkeypatch.setattr(cli, "_git", racing)
     assert co(capsys, write, f"file://{d}", dest, good[0]) == cli.ERROR
     assert (dest / "theirs").read_text() == "keep\n"
+
+
+@pytest.mark.parametrize("name", ["..", ".git", ".GIT", "."])
+def test_crafted_tree_entries_are_refused(upstream, tmp_path, write, capsys, monkeypatch, name):
+    d, _, _ = upstream
+    scratch = tmp_path / "t"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))   # where _bad_links builds its sandbox
+    blob = subprocess.run([*G, "-C", str(d), "hash-object", "-w", "--stdin"], input="x\n",
+                          capture_output=True, text=True, check=True).stdout.strip()
+    link = subprocess.run([*G, "-C", str(d), "hash-object", "-w", "--stdin"], input="/bin/true",
+                          capture_output=True, text=True, check=True).stdout.strip()
+    inner = subprocess.run([*G, "-C", str(d), "mktree"], input=f"100644 blob {blob}\tX\n",
+                           capture_output=True, text=True, check=True).stdout.strip()
+    base = git(d, "rev-parse", "HEAD^{tree}")
+    entries = git(d, "ls-tree", base) + f"\n040000 tree {inner}\t{name}\n120000 blob {link}\tls\n"
+    tree = subprocess.run([*G, "-C", str(d), "mktree"], input=entries, capture_output=True, text=True,
+                          check=True).stdout.strip()
+    sha = git(d, "commit-tree", tree, "-p", "HEAD", "-m", "crafted")
+    git(d, "update-ref", "refs/heads/main", sha)
+    dest = tmp_path / "install"
+    assert co(capsys, write, f"file://{d}", dest, sha) == cli.ERROR
+    assert not (scratch / "X").exists() and not (scratch / "ls").exists() and not dest.exists()
