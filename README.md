@@ -42,7 +42,10 @@ daily canary pipeline (V0-REL-03) ships one, every resolve exits `3`.
 by a branch or tag name the remote could point elsewhere) and verifies it. The commit must be on
 the remote's `--branch` (default `main`), so a manifest cannot name an unmerged commit; that is
 asked of a scratch repo fetched fresh from `--remote`, so nothing in the checkout's own `.git`
-(grafts, a local `url.insteadOf`) can change the answer. Every symlink in the commit's tree must
+(grafts, a local `url.insteadOf`) can change the answer. That scratch repo also ignores your
+global and system git config, so a proxy or CA set only there (`http.proxy`, `http.sslCAInfo`)
+does not apply to it: set `HTTPS_PROXY` or `GIT_SSL_CAINFO` in the environment instead (without
+them the check fails closed, exit `2`). Every symlink in the commit's tree must
 name a path that tree has (not `.git`, an ignored path, or anything outside), checked before the
 checkout moves. A shallow checkout is refused with a clear message. A first checkout that fails
 after its clone is removed (an empty `--dest` is kept, empty), so the next run starts clean.
