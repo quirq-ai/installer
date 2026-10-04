@@ -10,7 +10,8 @@ This drill runs that flow against a local stand-in for xo-space: a repo holding 
 backend) moves canary and writes channels.json. It checks:
 
 1. a fresh `qqinstall checkout` lands on canary's commit 1 (exit 0), and the checkout's own
-   install.sh would run it in place (`resolve_repo_dir` gives MANAGED_CHECKOUT=0, so no git runs);
+   install.sh would run it in place (`resolve_repo_dir` gives MANAGED_CHECKOUT=0, so no git runs),
+   with the test directory, not the checkout, as the workspace when run as `./xo-space/install.sh`;
 2. canary is promoted to commit 2: the install is stale (`verify` exits 1) until `checkout` runs
    again, then it is commit 2;
 3. a tag and a `refs/channels/canary` ref planted at an unreviewed commit change nothing: checkout
@@ -146,12 +147,21 @@ def main(argv=None) -> int:
         check(f"1. fresh qqinstall checkout (exit {rc}) is canary's commit 1", rc == 0 and head() == shas[0])
         lib = app / ".qq-drill-install-lib.sh"   # beside server.py, so install.sh sees itself in a checkout
         lib.write_text(functions_only((app / "install.sh").read_bytes()))
-        mode = subprocess.run(["bash", "-c", f'source "{lib}"; resolve_repo_dir; printf "%s|%s" "$MANAGED_CHECKOUT" "$REPO_DIR"'],
-                              cwd=app, capture_output=True, text=True,
-                              env={k: v for k, v in os.environ.items() if not k.startswith("QUIRQ_")})
+
+        def launch(cwd: Path) -> str:
+            r = subprocess.run(["bash", "-c", f'source "{lib}"; resolve_repo_dir; '
+                                'printf "%s|%s|%s" "$MANAGED_CHECKOUT" "$REPO_DIR" "$LAUNCH_DIR"'],
+                               cwd=cwd, capture_output=True, text=True,
+                               env={k: v for k, v in os.environ.items() if not k.startswith("QUIRQ_")})
+            return r.stdout if r.returncode == 0 else f"exit {r.returncode}"
+
+        mode = launch(app.parent)   # the documented `./xo-space/install.sh`, run from the test directory
+        check(f"   ./{REPO}/install.sh runs the checkout in place, no git, workspace beside it ({mode!r})",
+              mode == f"0|{app}|{app.parent}")
+        inside = launch(app)        # `cd xo-space && ./install.sh` would make the checkout the workspace
+        check(f"   (run from inside the checkout the workspace would be the checkout itself: {inside!r})",
+              inside == f"0|{app}|{app}")
         lib.unlink()
-        check(f"   the checkout's own install.sh runs it in place, no git ({mode.stdout!r})",
-              mode.returncode == 0 and mode.stdout == f"0|{app}")
 
         promote(shas[1])
         check("2. canary promoted to commit 2: the install is stale (verify exit 1)", verify() == 1)

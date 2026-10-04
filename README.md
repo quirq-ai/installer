@@ -39,15 +39,21 @@ qqinstall cannot start. The manifest appears only after release's first channel 
 daily canary pipeline (V0-REL-03) ships one, every resolve exits `3`.
 
 `checkout` clones or fetches, then detaches the checkout at the manifest's commit by its id (never
-by a branch or tag name the remote could point elsewhere) and verifies it. It records the
+by a branch or tag name the remote could point elsewhere) and verifies it. The commit must be on
+the remote's `--branch` (default `main`), so a manifest cannot name an unmerged commit, and no
+tracked symlink may point outside the checkout. A first checkout that fails is removed (an empty
+`--dest` is kept, empty), so the next run starts clean. It records the
 manifest's generation in the checkout's git config (`qqinstall.<repo>/<channel>.generation`) and
 refuses (exit `2`) a later `channels.json` with a lower generation, so a replayed old manifest
 cannot move an install back; a rollback is a new move with a higher generation and goes through.
-`resolve`, `verify` and `show` keep no state and cannot make that check (TODO(expert)).
+`resolve`, `verify` and `show` keep no state and cannot make that check (TODO(expert)). Anything
+running later as the same user can change the record; recovery is in
+[docs/xo-space-canary.md](docs/xo-space-canary.md#things-to-know).
 
 **Limits.** `verify` checks the checkout's top-level commit (replace refs ignored), that its tree
 has no tracked, untracked (non-ignored) or hidden (skip-worktree, assume-unchanged) changes, and,
-with `--remote`, its `origin`. It does not check the digest (that is for artifact installs) or
+with `--remote`, its `origin` as stored (before `url.insteadOf` rewrites), and refuses (exit `2`)
+tracked symlinks that point outside it. It does not check the digest (that is for artifact installs) or
 submodules, and it trusts the checkout's own `.git` (its filters, excludes and `core.fileMode` can
 hide changes or run code), so it checks an install you control, not a hostile tree. The default
 URL (`refs/heads/release-state`, so a same-named tag is never served) goes through GitHub's CDN,
@@ -74,19 +80,24 @@ scheduled, non-required `live-manifest` workflow, so release's live state never 
 ## xo-space test installs on canary (V0-INS-02)
 
 A test install checks before it runs, with no xo-space code change: `qqinstall checkout` puts
-`./xo-space` on exactly canary's commit and verifies it, then that checkout's own `./install.sh`
-runs it in place. Do not use `curl | sh` with `QUIRQ_SOURCE_REF` for canary: it installs whatever
+`./xo-space` on exactly canary's commit and verifies it, then that checkout's own install.sh,
+started as `./xo-space/install.sh` from the test directory, runs it in place. Do not use `curl | sh` with `QUIRQ_SOURCE_REF` for canary: it installs whatever
 the name `channels/canary` resolves to, and nothing in that chain is verified. Commands, caveats
 and what the live half waits on: [docs/xo-space-canary.md](docs/xo-space-canary.md).
 `tools/canary_install_drill.py` runs the flow against a local stand-in repo holding xo-space's real
 `install.sh`, through two promotions, planted refs and a rollback; presubmit runs it.
+
+TODO(suraj): V0-INS-02's scope changed. v0.md says test installs follow canary "through xo-space's
+existing `QUIRQ_SOURCE_REF` override"; that flow resolves `channels/canary` by name and verifies
+nothing, so it is now forbidden for canary and installs go through `qqinstall checkout` instead.
+Please accept the change (the coordinator is updating v0.md).
 
 ## v0 status
 
 | Item | What | PR | State |
 |---|---|---|---|
 | V0-INS-01 | Channel manifest: resolve a channel to a commit and digest | #2 | merged; live resolve waits on the first canary (V0-REL-03) |
-| V0-INS-02 | xo-space test installs follow canary | #3, audit fixes #5 | merged; offline drill passes; live half waits on V0-REL-03 and suraj (canary machines, `release-state` protection) |
+| V0-INS-02 | xo-space test installs follow canary | #3, audit fixes #5, #6 | merged; offline drill passes; live half waits on V0-REL-03 and suraj (canary machines, `release-state` protection) |
 
 Out of scope for v0: test installs following dev (v1); real installs following a channel and a
 desktop updater evaluation (v2).

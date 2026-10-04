@@ -19,22 +19,31 @@ python3 -m venv ~/.qqinstall && ~/.qqinstall/bin/pip install \
   "qqinstall @ git+https://github.com/quirq-ai/installer@<reviewed installer commit>"
 ```
 
-Then, in a directory used only for this test install, every time you install or update:
+Then, in a directory used only for this test install (the test directory), every time you install
+or update, run from that directory:
 
 ```sh
 ~/.qqinstall/bin/qqinstall checkout --repo xo-space --channel canary \
   --remote https://github.com/quirq-ai/xo-space.git --dest ./xo-space \
-  && (cd xo-space && ./install.sh)
+  && ./xo-space/install.sh
 ```
 
+Run `./xo-space/install.sh` from the test directory, never `cd xo-space && ./install.sh`: install.sh
+makes the directory it is started from the workspace (projects and `.quirq` state), so started from
+inside the checkout the first project lands in the checkout and every later `checkout` exits `1`.
+
 - `qqinstall checkout` reads `channels.json`, clones `./xo-space` the first time (fetches on
-  later runs), detaches it at exactly that commit by its id, then verifies it: the commit, no
-  tracked, untracked or hidden changes, and `origin` is the URL given. Only exit `0` lets
-  `install.sh` run.
-- `./install.sh` run from inside a checkout runs that checkout in place and never runs git, so
-  what starts is what was verified, and install.sh itself is canary's copy too.
+  later runs), refuses the commit unless it is on xo-space's `main`, detaches it at exactly that
+  commit by its id, then verifies it: the commit, no tracked, untracked or hidden changes, no
+  symlink pointing outside the checkout, and `origin` is the URL given. Only exit `0` lets
+  `install.sh` run. A first checkout that fails is removed, so the next run starts clean.
+- `./xo-space/install.sh` runs that checkout in place and never runs git, so the code that starts,
+  and install.sh itself, are canary's verified copy. What install.sh then downloads is **not**
+  verified: if `uv` is missing it pipes uv's installer to `sh` unpinned, and it runs
+  `uv pip install -r requirements.txt` without hashes. To narrow that, install uv beforehand by a
+  pinned method (a release you checked, or your OS package manager), so install.sh finds it.
 - Running the same command again follows promotions and rollbacks alike. It refuses (exit `2`)
-  a `channels.json` older than the last one this checkout was put on.
+  a `channels.json` older than the last one this checkout was put on (see "The generation record").
 - Exit `1` (local changes) leaves the checkout as it is; `3` means nothing is published for
   canary yet; `2` is an error. Treat anything but `0` as "do not run" (Python itself exits `1` if
   qqinstall cannot start).
@@ -62,6 +71,17 @@ Then, in a directory used only for this test install, every time you install or 
 
 ## Things to know
 
+- **The generation record.** `checkout` stores the last generation it installed in the checkout's
+  `.git/config` as `qqinstall.xo-space/canary.generation`. Repo content cannot change it during
+  `checkout` (hooks and fsmonitor are off, includes are not read), but anything that runs later as
+  the same user can, canary's own install.sh and server included: unsetting it lets a replayed
+  older manifest through, raising it wedges updates. So it only defends against an old
+  `channels.json` replayed from the network side. If release-state is ever reset (generations
+  restart at 1) or a bad manifest raised it, every run exits `2`; after checking what canary
+  should be, clear it with
+  `git -C xo-space config --local --unset-all qqinstall.xo-space/canary.generation` and run the
+  command again.
+
 - `verify` trusts the checkout's own `.git` (filters, excludes, `core.fileMode`): it checks an
   install the operator controls, not a hostile tree. Replace refs are ignored. It counts files
   install.sh or the server create only if xo-space's `.gitignore` does not list them.
@@ -81,8 +101,9 @@ Then, in a directory used only for this test install, every time you install or 
 against a local stand-in repo holding xo-space's real `install.sh` (pinned commit and sha256 in
 `pins.toml`), with release's own executor moving canary:
 
-1. a fresh `qqinstall checkout` lands on canary's commit, and that checkout's own install.sh
-   would run it in place (its `resolve_repo_dir` gives managed mode off, so no git);
+1. a fresh `qqinstall checkout` lands on canary's commit, and `./xo-space/install.sh` run from the
+   test directory would run it in place (its `resolve_repo_dir` gives managed mode off, so no git)
+   with the test directory as the workspace;
 2. after a promotion the install reads as stale until `checkout` runs again;
 3. a planted tag and a planted `refs/channels/canary` change nothing (and, for contrast, the
    `QUIRQ_SOURCE_REF` flow installs the planted commit);

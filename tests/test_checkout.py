@@ -141,3 +141,75 @@ def test_unreadable_recorded_generation_is_an_error(upstream, tmp_path, write, c
     assert co(capsys, write, remote, dest, good[0]) == cli.OK
     git(dest, "config", "--local", "qqinstall.app/canary.generation", "nope")
     assert co(capsys, write, remote, dest, good[1], name="m2.json", generation=5) == cli.ERROR
+
+
+def test_checkout_refuses_a_commit_off_the_branch(upstream, tmp_path, write, capsys):
+    d, good, evil = upstream
+    remote = f"file://{d}"
+    dest = tmp_path / "install"
+    # a manifest naming an unmerged commit is refused, and the failed first checkout leaves nothing
+    assert co(capsys, write, remote, dest, evil) == cli.ERROR
+    assert not dest.exists()
+    assert co(capsys, write, remote, dest, good[0], name="m2.json") == cli.OK
+    assert co(capsys, write, remote, dest, evil, name="m3.json", generation=2) == cli.ERROR
+    assert git(dest, "rev-parse", "HEAD") == good[0]
+    src = write(doc(app={"canary": entry(commit=evil)}), name="m4.json")
+    assert run(capsys, "checkout", "--repo", "app", "--channel", "canary", "--source", src,
+               "--remote", remote, "--dest", str(tmp_path / "other"), "--branch", "side") == cli.OK
+    for bad in ["../x", "a:b", "-x"]:
+        assert run(capsys, "checkout", "--repo", "app", "--channel", "canary", "--source", src,
+                   "--remote", remote, "--dest", str(tmp_path / "x"), f"--branch={bad}") == cli.ERROR
+
+
+def test_failed_first_checkout_is_undone(upstream, tmp_path, write, capsys):
+    d, good, _ = upstream
+    remote = f"file://{d}"
+    dest = tmp_path / "install"
+    assert co(capsys, write, remote, dest, "c" * 40) == cli.ERROR      # not on the remote (yet)
+    assert not dest.exists()
+    assert co(capsys, write, remote, dest, good[0], name="m2.json") == cli.OK
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert co(capsys, write, remote, empty, "c" * 40, name="m3.json") == cli.ERROR
+    assert empty.is_dir() and not any(empty.iterdir())                    # an empty --dest stays, empty
+    assert co(capsys, write, remote, empty, good[0], name="m4.json") == cli.OK
+    assert git(empty, "rev-parse", "HEAD") == good[0]
+
+
+def test_symlinks_must_stay_inside(upstream, tmp_path, write, capsys):
+    d, _, _ = upstream
+    remote = f"file://{d}"
+    (d / "docs").mkdir()
+    (d / "docs" / "readme").symlink_to("../server.py")                  # inside: fine
+    git(d, "add", "docs")
+    git(d, "commit", "-qm", "inside link")
+    inside = git(d, "rev-parse", "HEAD")
+    assert co(capsys, write, remote, tmp_path / "a", inside) == cli.OK
+    (d / "install.sh").symlink_to(tmp_path / "outside.sh")
+    git(d, "add", "install.sh")
+    git(d, "commit", "-qm", "outside link")
+    outside = git(d, "rev-parse", "HEAD")
+    assert co(capsys, write, remote, tmp_path / "b", outside, name="m2.json") == cli.ERROR
+    assert not (tmp_path / "b").exists()
+
+
+def test_origin_is_compared_before_insteadof(upstream, tmp_path, write, capsys, monkeypatch):
+    d, good, _ = upstream
+    home = tmp_path / "home"
+    home.mkdir()
+    remote = "https://example.invalid/app.git"
+    (home / ".gitconfig").write_text(f'[url "file://{d}"]\n\tinsteadOf = {remote}\n')
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    dest = tmp_path / "install"
+    assert co(capsys, write, remote, dest, good[0]) == cli.OK
+    assert co(capsys, write, remote, dest, good[1], name="m2.json") == cli.OK
+
+
+def test_git_keeps_only_ca_settings(monkeypatch):
+    monkeypatch.setenv("GIT_SSL_CAINFO", "/ca.pem")
+    monkeypatch.setenv("GIT_DIR", "/elsewhere")
+    seen = {}
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: seen.update(kw["env"]) or subprocess.CompletedProcess(argv, 0))
+    cli._git(None, "version")
+    assert seen.get("GIT_SSL_CAINFO") == "/ca.pem" and "GIT_DIR" not in seen
