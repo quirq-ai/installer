@@ -36,8 +36,16 @@ checkout is exactly the channel's commit with no local changes), `1` `verify` mi
 after release's first channel move, so until the daily canary pipeline (V0-REL-03) ships one,
 every resolve exits `3`.
 
+**Limits.** `verify` checks the checkout's top-level commit and that its tree has no tracked,
+untracked (non-ignored) or hidden (skip-worktree, assume-unchanged) changes. It does not check the
+digest (that is for artifact installs), which remote the checkout came from, or submodules, and it
+inspects the checkout with git hooks and fsmonitor turned off. The default URL is served through
+GitHub's CDN, which can lag a channel move by a few minutes; use `--at <release-state commit>`
+when a read must be exact. Exit `3` also covers a 404 from a renamed or private release repo, so
+"not published" lasting past the first canary means look at the URL.
+
 Every field is checked before it is used: the schema, a 40-hex commit, a `sha256:` digest, a
-positive generation, names, no duplicate keys, a 1 MiB cap, https only (redirects too). One bad
+positive generation, names, no duplicate keys, a 1 MiB cap, https only (redirects too). Anything unexpected exits `2`, never `1`. One bad
 entry anywhere and the whole file is refused.
 
 **What it trusts.** The commit and digest come from the manifest, never from the artifact or

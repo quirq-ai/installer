@@ -105,3 +105,39 @@ def test_redirect_to_http_is_refused():
     h = manifest._HttpsOnly()
     with pytest.raises(ManifestError):
         h.redirect_request(None, None, 302, "Found", {}, "http://example.invalid/x")
+
+
+@pytest.mark.parametrize("bad", [
+    doc(app={"canary": entry(commit=C1 + "\n")}),
+    doc(app={"canary": entry(digest=D1 + "\n")}),
+    doc(**{"app\n": {"canary": entry()}}),
+])
+def test_trailing_newlines_are_refused(write, bad):
+    with pytest.raises(ManifestError):
+        manifest.parse(json.dumps(bad).encode())
+
+
+def test_trailing_newline_arguments_are_refused(write):
+    with pytest.raises(manifest.InstallerError):
+        manifest.resolve(write(doc(app={"canary": entry()})), "app\n", "canary")
+    with pytest.raises(manifest.InstallerError):
+        manifest.source_at(C1 + "\n")
+
+
+@pytest.mark.parametrize("text", [
+    '{"schema": "qq-channels/1", "repos": {"app": {"canary": {"commit": "%s", "digest": "%s", "generation": 1%s}}}}'
+    % (C1, D1, "0" * 5000),
+    "[" * 200000 + "]" * 200000,
+])
+def test_parser_limits_are_manifest_errors(text):
+    with pytest.raises(ManifestError):
+        manifest.parse(text.encode())
+
+
+def test_pins_agree_with_pyproject():
+    import tomllib
+    from pathlib import Path
+    root = Path(__file__).parent.parent
+    commit = tomllib.loads((root / "pins.toml").read_text())["release"]["commit"]
+    extra = tomllib.loads((root / "pyproject.toml").read_text())["project"]["optional-dependencies"]["contract"]
+    assert extra == [f"qqrelease @ git+https://github.com/quirq-ai/release@{commit}"]

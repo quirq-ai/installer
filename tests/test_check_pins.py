@@ -53,3 +53,20 @@ def test_checks_composite_actions_anywhere(tmp_path):
 
 def test_this_repo_is_clean():
     assert check_pins.problems(Path(__file__).parent.parent) == []
+
+
+@pytest.mark.parametrize("text", [
+    "steps:\n  - name: x  # see: |\n    uses: actions/checkout@main\n",
+    "steps:\n  - ? uses\n    : actions/checkout@main\n",
+    'steps:\n  - "u\\x73es": actions/checkout@main\n',
+    "steps:\n  - uses: ./.qq/infra-config/act\n",
+    "steps:\n  - uses: ./.qq/x/../infra-config/act\n",
+    "steps:\n  - uses: ./.git/act\n",
+])
+def test_review_fail_open_cases(tmp_path, text):
+    assert problems(tmp_path, text)
+
+
+def test_local_actions_in_other_dirs_are_scanned(tmp_path):
+    assert problems(tmp_path, "runs:\n  steps:\n    - uses: a/b@main\n", rel=".qq/act/action.yml")
+    assert problems(tmp_path, "runs:\n  steps:\n    - uses: a/b@main\n", rel="tools/.venv/act/action.yml")

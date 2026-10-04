@@ -51,3 +51,32 @@ def test_verify_not_a_checkout(write, tmp_path, capsys):
 def test_show(write, capsys):
     rc, out, _ = run(capsys, "show", "--source", write(doc(app={"canary": entry()})))
     assert rc == 0 and json.loads(out)["app canary"]["commit"] == C1
+
+
+def test_verify_untracked_and_hidden_changes(write, checkout, capsys):
+    import subprocess
+    d, sha = checkout
+    src = write(doc(app={"canary": entry(commit=sha)}))
+    base = ["verify", "--repo", "app", "--channel", "canary", "--source", src, "--checkout", str(d)]
+    (d / "new").write_text("x\n")
+    assert run(capsys, *base)[0] == cli.MISMATCH
+    (d / "new").unlink()
+    subprocess.run(["git", "-C", str(d), "update-index", "--skip-worktree", "f"], check=True)
+    assert run(capsys, *base)[0] == cli.MISMATCH
+    subprocess.run(["git", "-C", str(d), "update-index", "--no-skip-worktree", "f"], check=True)
+    assert run(capsys, *base)[0] == cli.OK
+
+
+def test_verify_subdirectory_is_an_error(write, checkout, capsys):
+    d, sha = checkout
+    (d / "sub").mkdir()
+    src = write(doc(app={"canary": entry(commit=sha)}))
+    assert run(capsys, "verify", "--repo", "app", "--channel", "canary", "--source", src,
+               "--checkout", str(d / "sub"))[0] == cli.ERROR
+
+
+def test_unexpected_errors_exit_2(write, capsys, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("x")
+    monkeypatch.setattr(cli.manifest, "resolve", boom)
+    assert run(capsys, "resolve", "--repo", "app", "--channel", "canary", "--source", write(doc()))[0] == cli.ERROR

@@ -32,9 +32,10 @@ DEFAULT_SOURCE = f"https://raw.githubusercontent.com/{RELEASE_REPO}/{STATE_BRANC
 MAX_BYTES = 1 << 20
 TIMEOUT_S = 30
 
-NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
-COMMIT = re.compile(r"^[0-9a-f]{40}$")
-DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+# Always used with fullmatch: `$` with match would accept a trailing newline.
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+COMMIT = re.compile(r"[0-9a-f]{40}")
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class InstallerError(Exception):
@@ -62,13 +63,13 @@ class Channel:
 
 def source_at(commit: str) -> str:
     """The manifest as it was at one `release-state` commit: a reproducible read."""
-    if not COMMIT.match(commit):
+    if not COMMIT.fullmatch(commit):
         raise InstallerError(f"--at must be a full 40-character commit SHA, not {commit!r}")
     return f"https://raw.githubusercontent.com/{RELEASE_REPO}/{commit}/{FILE}"
 
 
 def check_name(kind: str, value: str) -> str:
-    if not isinstance(value, str) or not NAME.match(value):
+    if not isinstance(value, str) or not NAME.fullmatch(value):
         raise InstallerError(f"{kind} {value!r} is not a valid name")
     return value
 
@@ -95,7 +96,7 @@ def read(source: str) -> bytes:
                 raise NotPublished(f"no channel manifest at {source} yet (release publishes it after the "
                                    "first channel move)") from None
             raise ManifestError(f"could not read {source}: HTTP {e.code}") from None
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
             raise ManifestError(f"could not read {source}: {getattr(e, 'reason', e)}") from None
     elif "://" in source:
         raise ManifestError(f"only https URLs or local paths are accepted, not {source}")
@@ -128,6 +129,8 @@ def parse(data: bytes) -> dict[tuple[str, str], Channel]:
         doc = json.loads(data.decode("utf-8"), object_pairs_hook=_no_duplicates)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         raise ManifestError(f"the manifest is not valid JSON: {e}") from None
+    except (ValueError, RecursionError) as e:   # e.g. a huge integer, or absurd nesting
+        raise ManifestError(f"the manifest could not be parsed: {type(e).__name__}") from None
     if not isinstance(doc, dict):
         raise ManifestError("the manifest is not a JSON object")
     if doc.get("schema") != SCHEMA:
@@ -137,12 +140,12 @@ def parse(data: bytes) -> dict[tuple[str, str], Channel]:
         raise ManifestError("the manifest has no `repos` object")
     out = {}
     for repo, chans in repos.items():
-        if not isinstance(repo, str) or not NAME.match(repo):
+        if not isinstance(repo, str) or not NAME.fullmatch(repo):
             raise ManifestError(f"the manifest names an invalid repo {repo!r}")
         if not isinstance(chans, dict):
             raise ManifestError(f"{repo}: channels are not an object")
         for name, entry in chans.items():
-            if not isinstance(name, str) or not NAME.match(name):
+            if not isinstance(name, str) or not NAME.fullmatch(name):
                 raise ManifestError(f"{repo}: invalid channel name {name!r}")
             out[(repo, name)] = _entry(repo, name, entry)
     return out
@@ -153,9 +156,9 @@ def _entry(repo: str, channel: str, e) -> Channel:
     if not isinstance(e, dict):
         raise ManifestError(f"{where}: entry is not an object")
     commit, digest, gen = e.get("commit"), e.get("digest"), e.get("generation")
-    if not isinstance(commit, str) or not COMMIT.match(commit):
+    if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
         raise ManifestError(f"{where}: commit {commit!r} is not a 40-character lowercase hex SHA")
-    if not isinstance(digest, str) or not DIGEST.match(digest):
+    if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
         raise ManifestError(f"{where}: digest {digest!r} is not sha256:<64 lowercase hex>")
     if isinstance(gen, bool) or not isinstance(gen, int) or gen < 1:
         raise ManifestError(f"{where}: generation {gen!r} is not a positive integer")

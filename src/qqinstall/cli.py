@@ -17,6 +17,7 @@ import json
 import subprocess
 import sys
 from dataclasses import asdict
+from pathlib import Path
 
 from qqinstall import manifest
 from qqinstall.manifest import InstallerError, NotPublished
@@ -30,8 +31,15 @@ def _source(args) -> str:
     return manifest.source_at(args.at) if args.at else (args.source or manifest.DEFAULT_SOURCE)
 
 
+# The checkout is not trusted: never let its config run code (fsmonitor) while we inspect it.
+GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]
+
+
 def _git(checkout: str, *argv: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", checkout, *argv], capture_output=True, text=True)
+    try:
+        return subprocess.run(["git", *GIT_SAFE, "-C", checkout, *argv], capture_output=True, text=True)
+    except OSError as e:
+        raise InstallerError(f"could not run git: {e}") from None
 
 
 def cmd_resolve(args) -> int:
@@ -47,19 +55,29 @@ def cmd_resolve(args) -> int:
 
 def cmd_verify(args) -> int:
     ch = manifest.resolve(_source(args), args.repo, args.channel)
+    top = _git(args.checkout, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        raise InstallerError(f"{args.checkout} is not a git checkout")
+    if Path(top.stdout.strip()).resolve() != Path(args.checkout).resolve():
+        raise InstallerError(f"{args.checkout} is inside a checkout, not the top of one ({top.stdout.strip()})")
     head = _git(args.checkout, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
     if head.returncode != 0:
-        raise InstallerError(f"{args.checkout} is not a git checkout with a commit")
-    status = _git(args.checkout, "status", "--porcelain", "--untracked-files=no")
-    if status.returncode != 0:
+        raise InstallerError(f"{args.checkout} is a git checkout with no commit")
+    # Untracked files count (an install is the tree, not just the tracked files); entries marked
+    # assume-unchanged or skip-worktree (`ls-files -v` lowercase or S) could hide edits, so they count too.
+    status = _git(args.checkout, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
+    flags = _git(args.checkout, "ls-files", "-v")
+    if status.returncode != 0 or flags.returncode != 0:
         raise InstallerError(f"could not read the status of {args.checkout}")
+    hidden = [ln for ln in flags.stdout.splitlines() if ln[:1].islower() or ln[:1] == "S"]
     got = head.stdout.strip()
     if got != ch.commit:
         print(f"{args.checkout} is at {got[:12]}, but {ch.repo} {ch.channel} names {ch.commit[:12]} "
               f"(generation {ch.generation})", file=sys.stderr)
         return MISMATCH
-    if status.stdout.strip():
-        print(f"{args.checkout} is at {ch.repo} {ch.channel}'s commit {got[:12]} but has local changes",
+    if status.stdout.strip() or hidden:
+        print(f"{args.checkout} is at {ch.repo} {ch.channel}'s commit {got[:12]} but has local changes "
+              "(or files marked to hide them)",
               file=sys.stderr)
         return MISMATCH
     print(f"ok: {args.checkout} is {ch.repo} {ch.channel} at {got[:12]} (generation {ch.generation})")
@@ -110,6 +128,9 @@ def main(argv=None) -> int:
         return NOT_PUBLISHED
     except InstallerError as e:
         print(f"error: {e}", file=sys.stderr)
+        return ERROR
+    except Exception as e:   # never let an unexpected failure exit 1, which means "mismatch"
+        print(f"error: unexpected {type(e).__name__}: {e}", file=sys.stderr)
         return ERROR
 
 
