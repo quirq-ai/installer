@@ -61,12 +61,20 @@ two canaries and rolls one back, and after each move `qqinstall resolve` must na
 and digest (and exit `3` before the first move). Presubmit runs it, and also resolves the live
 manifest, accepting `0` or `3`.
 
+## xo-space test installs on canary (V0-INS-02)
+
+A test install follows canary with xo-space's existing override, no code change:
+`curl -fsSL https://quirq.ai/install | QUIRQ_SOURCE_REF=channels/canary sh`, in a fresh directory,
+in quirq's research and test environments only. Details, caveats and what the live half waits on:
+[docs/xo-space-canary.md](docs/xo-space-canary.md). `tools/canary_install_drill.py` runs xo-space's
+real `install.sh` through two canary promotions and a rollback; presubmit runs it.
+
 ## v0 status
 
 | Item | What | PR | State |
 |---|---|---|---|
 | V0-INS-01 | Channel manifest: resolve a channel to a commit and digest | #2 | in review |
-| V0-INS-02 | xo-space test installs follow canary | | waits on V0-INS-01 |
+| V0-INS-02 | xo-space test installs follow canary | #3 | in review; live half waits on suraj (release executor identity, canary environment) and V0-REL-03 |
 
 Out of scope for v0: test installs following dev (v1); real installs following a channel and a
 desktop updater evaluation (v2).
