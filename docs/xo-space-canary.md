@@ -35,7 +35,7 @@ inside the checkout the first project lands in the checkout and every later `che
 - `qqinstall checkout` reads `channels.json`, clones `./xo-space` the first time (fetches on
   later runs), refuses the commit unless it is on xo-space's `main`, detaches it at exactly that
   commit by its id, then verifies it: the commit, no tracked, untracked or hidden changes, no
-  symlink pointing outside the checkout, and `origin` is the URL given. Only exit `0` lets
+  symlink to a path outside the commit's own tree, and `origin` is the URL given. Only exit `0` lets
   `install.sh` run. A first checkout that fails is removed, so the next run starts clean.
 - `./xo-space/install.sh` runs that checkout in place and never runs git, so the code that starts,
   and install.sh itself, are canary's verified copy. What install.sh then downloads is **not**

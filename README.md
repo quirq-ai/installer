@@ -40,9 +40,13 @@ daily canary pipeline (V0-REL-03) ships one, every resolve exits `3`.
 
 `checkout` clones or fetches, then detaches the checkout at the manifest's commit by its id (never
 by a branch or tag name the remote could point elsewhere) and verifies it. The commit must be on
-the remote's `--branch` (default `main`), so a manifest cannot name an unmerged commit, and no
-tracked symlink may point outside the checkout. A first checkout that fails is removed (an empty
-`--dest` is kept, empty), so the next run starts clean. It records the
+the remote's `--branch` (default `main`), so a manifest cannot name an unmerged commit; that is
+asked of a scratch repo fetched fresh from `--remote`, so nothing in the checkout's own `.git`
+(grafts, a local `url.insteadOf`) can change the answer. Every symlink in the commit's tree must
+name a path that tree has (not `.git`, an ignored path, or anything outside), checked before the
+checkout moves. A shallow checkout is refused with a clear message. A first checkout that fails
+after its clone is removed (an empty `--dest` is kept, empty), so the next run starts clean.
+`--at` gets the same git hardening (CA settings kept, timeouts). It records the
 manifest's generation in the checkout's git config (`qqinstall.<repo>/<channel>.generation`) and
 refuses (exit `2`) a later `channels.json` with a lower generation, so a replayed old manifest
 cannot move an install back; a rollback is a new move with a higher generation and goes through.
@@ -53,7 +57,7 @@ running later as the same user can change the record; recovery is in
 **Limits.** `verify` checks the checkout's top-level commit (replace refs ignored), that its tree
 has no tracked, untracked (non-ignored) or hidden (skip-worktree, assume-unchanged) changes, and,
 with `--remote`, its `origin` as stored (before `url.insteadOf` rewrites), and refuses (exit `2`)
-tracked symlinks that point outside it. It does not check the digest (that is for artifact installs) or
+symlinks to paths outside its tree. It does not check the digest (that is for artifact installs) or
 submodules, and it trusts the checkout's own `.git` (its filters, excludes and `core.fileMode` can
 hide changes or run code), so it checks an install you control, not a hostile tree. The default
 URL (`refs/heads/release-state`, so a same-named tag is never served) goes through GitHub's CDN,
@@ -90,7 +94,7 @@ and what the live half waits on: [docs/xo-space-canary.md](docs/xo-space-canary.
 TODO(suraj): V0-INS-02's scope changed. v0.md says test installs follow canary "through xo-space's
 existing `QUIRQ_SOURCE_REF` override"; that flow resolves `channels/canary` by name and verifies
 nothing, so it is now forbidden for canary and installs go through `qqinstall checkout` instead.
-Please accept the change (the coordinator is updating v0.md).
+Please accept the change; v0.md needs the same update.
 
 ## v0 status
 

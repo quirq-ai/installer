@@ -15,14 +15,14 @@ The file appears only after the first channel move, so "absent" is a normal stat
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
-import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+from qqinstall import gitsafe
+from qqinstall.errors import InstallerError
 
 SCHEMA = "qq-channels/1"
 RELEASE_REPO = "quirq-ai/release"
@@ -41,10 +41,6 @@ TIMEOUT_S = 30
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-
-
-class InstallerError(Exception):
-    """A failure the caller should report as is."""
 
 
 class ManifestError(InstallerError):
@@ -78,26 +74,9 @@ def source_at(commit: str) -> str:
 def check_on_release_state(commit: str, remote: str = RELEASE_GIT) -> None:
     """Raise unless `commit` is on `remote`'s release-state branch (the branch's tip or an ancestor)."""
     source_at(commit)   # the same SHA check
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env["GIT_TERMINAL_PROMPT"] = "0"
-
-    def git(*argv, cwd):
-        try:
-            return subprocess.run(["git", "--no-replace-objects", *argv], cwd=cwd, env=env,
-                                  capture_output=True, text=True)
-        except OSError as e:
-            raise InstallerError(f"could not run git: {e}") from None
-
-    with tempfile.TemporaryDirectory() as tmp:
-        if git("init", "-q", cwd=tmp).returncode:
-            raise InstallerError("could not create a scratch git repository")
-        fetched = git("fetch", "--quiet", "--no-tags", "--filter=blob:none", remote,
-                      f"+refs/heads/{STATE_BRANCH}:refs/qq/{STATE_BRANCH}", cwd=tmp)
-        if fetched.returncode:
-            raise InstallerError(f"could not read the {STATE_BRANCH} branch of {remote}")
-        if git("merge-base", "--is-ancestor", commit, f"refs/qq/{STATE_BRANCH}", cwd=tmp).returncode:
-            raise InstallerError(f"{commit[:12]} is not on {remote}'s {STATE_BRANCH} branch; refusing to "
-                                 "read a manifest from it")
+    if not gitsafe.on_branch(commit, remote, STATE_BRANCH):
+        raise InstallerError(f"{commit[:12]} is not on {remote}'s {STATE_BRANCH} branch; refusing to "
+                             "read a manifest from it")
 
 
 def check_name(kind: str, value: str) -> str:
