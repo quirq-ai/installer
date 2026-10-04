@@ -213,3 +213,80 @@ def test_git_keeps_only_ca_settings(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: seen.update(kw["env"]) or subprocess.CompletedProcess(argv, 0))
     cli._git(None, "version")
     assert seen.get("GIT_SSL_CAINFO") == "/ca.pem" and "GIT_DIR" not in seen
+
+
+def test_branch_check_ignores_the_checkouts_own_git(upstream, tmp_path, write, capsys):
+    d, good, evil = upstream
+    remote = f"file://{d}"
+    dest = tmp_path / "install"
+    assert co(capsys, write, remote, dest, good[0]) == cli.OK
+    # grafts in the checkout claiming evil is an ancestor of main
+    git(dest, "fetch", "-q", "origin", "side")
+    (dest / ".git" / "info").mkdir(exist_ok=True)
+    tip = git(dest, "rev-parse", "origin/main")
+    (dest / ".git" / "info" / "grafts").write_text(f"{tip} {good[0]} {evil}\n")
+    assert co(capsys, write, remote, dest, evil, name="m2.json", generation=2) == cli.ERROR
+    assert git(dest, "rev-parse", "HEAD") == good[0]
+    (dest / ".git" / "info" / "grafts").unlink()
+    # a local insteadOf sending fetches to a copy whose main is evil
+    fake = tmp_path / "fake"
+    subprocess.run(["git", "clone", "-q", "--bare", str(d), str(fake)], check=True)
+    git(fake, "update-ref", "refs/heads/main", evil)
+    git(dest, "config", "--local", f"url.file://{fake}.insteadOf", remote)
+    assert co(capsys, write, remote, dest, evil, name="m3.json", generation=3) == cli.ERROR
+    assert git(dest, "rev-parse", "HEAD") == good[0]
+
+
+def test_shallow_checkout_is_refused_plainly(upstream, tmp_path, write, capsys):
+    d, good, _ = upstream
+    dest = tmp_path / "install"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{d}", str(dest)], check=True)
+    assert co(capsys, write, f"file://{d}", dest, good[0]) == cli.ERROR
+
+
+def link_commit(repo, links):
+    for path, target in links.items():
+        p = repo / path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.symlink_to(target)
+        git(repo, "add", path)
+    git(repo, "commit", "-qm", "links")
+    return git(repo, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("target", [".git/config", "venv/bin/payload", "/etc/passwd", "../outside",
+                                    "install.sh", "docs/../../x"])
+def test_links_must_name_the_tree(upstream, tmp_path, write, capsys, target):
+    d, good, _ = upstream
+    remote = f"file://{d}"
+    dest = tmp_path / "install"
+    assert co(capsys, write, remote, dest, good[0]) == cli.OK
+    sha = link_commit(d, {"install.sh": target})
+    assert co(capsys, write, remote, dest, sha, name="m2.json", generation=2) == cli.ERROR
+    assert git(dest, "rev-parse", "HEAD") == good[0]          # refused before the checkout moved
+
+
+def test_links_inside_the_tree_are_fine(upstream, tmp_path, write, capsys):
+    d, _, _ = upstream
+    (d / "docs").mkdir()
+    (d / "docs" / "a.md").write_text("a\n")
+    git(d, "add", "docs")
+    sha = link_commit(d, {"run.py": "server.py", "d": "docs", "chain": "d/a.md", "docs/up": "../server.py"})
+    assert co(capsys, write, f"file://{d}", tmp_path / "install", sha) == cli.OK
+
+
+def test_cleanup_never_touches_a_dest_it_did_not_clone(upstream, tmp_path, write, capsys, monkeypatch):
+    d, good, _ = upstream
+    dest = tmp_path / "install"
+    real = cli._git
+
+    def racing(checkout, *argv):
+        if argv[0] == "clone":                  # someone else creates dest, and the clone fails
+            dest.mkdir()
+            (dest / "theirs").write_text("keep\n")
+            return subprocess.CompletedProcess(argv, 128)
+        return real(checkout, *argv)
+
+    monkeypatch.setattr(cli, "_git", racing)
+    assert co(capsys, write, f"file://{d}", dest, good[0]) == cli.ERROR
+    assert (dest / "theirs").read_text() == "keep\n"

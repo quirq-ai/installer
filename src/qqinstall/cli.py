@@ -21,14 +21,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
-import subprocess
 import sys
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from qqinstall import manifest
+from qqinstall import gitsafe, manifest
 from qqinstall.manifest import Channel, InstallerError, NotPublished
 
 OK, MISMATCH, ERROR, NOT_PUBLISHED = 0, 1, 2, 3
@@ -43,29 +42,7 @@ def _source(args) -> str:
     return args.source or manifest.DEFAULT_SOURCE
 
 
-# Replace refs are ignored, so a commit is always its real tree; fsmonitor and hooks are off. git
-# still trusts the checkout's own .git (its filters, excludes and core.fileMode can run code or hide
-# changes), so this checks an install its operator controls, not a hostile tree. Inherited GIT_*
-# variables are dropped so git looks at the checkout, not wherever GIT_DIR points, except the CA
-# settings some networks need. A transfer slower than 1 KB/s for a minute is abandoned.
-GIT_SAFE = ["--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-            "-c", "advice.detachedHead=false", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60"]
-GIT_ENV_KEPT = {"GIT_SSL_CAINFO", "GIT_SSL_CAPATH"}
-GIT_TIMEOUT = 900  # seconds for any one git command; a clone of xo-space takes well under a minute
-BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
-
-
-def _git(checkout: str | None, *argv: str) -> subprocess.CompletedProcess:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k in GIT_ENV_KEPT}
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    where = ["-C", checkout] if checkout else []
-    try:
-        return subprocess.run(["git", *GIT_SAFE, *where, *argv], capture_output=True, text=True, env=env,
-                              timeout=GIT_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        raise InstallerError(f"git {argv[0]} took longer than {GIT_TIMEOUT}s") from None
-    except OSError as e:
-        raise InstallerError(f"could not run git: {e}") from None
+_git = gitsafe.run
 
 
 def _top_level(checkout: str) -> None:
@@ -94,20 +71,49 @@ def _local_changes(checkout: str) -> bool:
     return bool(status.stdout.strip() or hidden)
 
 
-def _escaping_links(checkout: str) -> list[str]:
-    """Tracked symlinks that resolve outside the checkout (install.sh could be one)."""
-    out = _git(checkout, "ls-files", "-s", "-z")
+def _bad_links(checkout: str, commit: str) -> list[str]:
+    """Symlinks in `commit`'s tree that do not resolve to a path the tree itself has: anything
+    outside the checkout, in .git, or in an untracked or ignored path (a venv, the server's state)
+    is not what was verified. Read from the commit's objects, so it can run before the checkout
+    moves; links are resolved by recreating the tree's directories, files (empty) and links in a
+    scratch directory, so chains of links resolve exactly as they would in the checkout."""
+    out = _git(checkout, "ls-tree", "-r", "-t", "-z", "--full-tree", commit)
     if out.returncode != 0:
-        raise InstallerError(f"could not list the files of {checkout}")
-    root = Path(checkout).resolve()
-    bad = []
-    for rec in out.stdout.split("\0"):
-        if rec.startswith("120000 "):
-            path = rec.split("\t", 1)[1]
-            target = Path(os.path.realpath(root / path))
-            if target != root and root not in target.parents:
+        raise InstallerError(f"could not list the tree of {commit[:12]}")
+    files, dirs, links = set(), set(), {}
+    for rec in filter(None, out.stdout.split("\0")):
+        meta, path = rec.split("\t", 1)
+        mode, kind, oid = meta.split()
+        if kind == "tree":
+            dirs.add(path)
+        elif mode == "120000":
+            links[path] = oid
+        elif kind == "blob":
+            files.add(path)
+        # a submodule (commit) is left out: its path is an empty directory in this checkout
+    if not links:
+        return []
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        for d in sorted(dirs):
+            (root / d).mkdir(parents=True, exist_ok=True)
+        for f in files:
+            (root / f).touch()
+        for path, oid in links.items():
+            target = _git(checkout, "cat-file", "blob", oid)
+            if target.returncode != 0:
+                raise InstallerError(f"could not read the symlink {path} in {commit[:12]}")
+            try:
+                os.symlink(target.stdout, root / path)
+            except (OSError, ValueError):
+                raise InstallerError(f"could not recreate the symlink {path} in {commit[:12]}") from None
+        bad = []
+        for path in sorted(links):
+            real = Path(os.path.realpath(root / path))
+            rel = real.relative_to(root).as_posix() if real == root or root in real.parents else None
+            if rel is None or (rel != "." and rel not in files and rel not in dirs) or rel in links:
                 bad.append(path)
-    return bad
+        return bad
 
 
 def check(checkout: str, ch: Channel, remote: str | None = None) -> int:
@@ -127,9 +133,9 @@ def check(checkout: str, ch: Channel, remote: str | None = None) -> int:
         print(f"{checkout} is at {ch.repo} {ch.channel}'s commit {got[:12]} but has local changes "
               "(or files marked to hide them)", file=sys.stderr)
         return MISMATCH
-    escaping = _escaping_links(checkout)
-    if escaping:
-        raise InstallerError(f"{checkout} has symlinks that point outside it: {', '.join(escaping[:5])}")
+    bad = _bad_links(checkout, got)
+    if bad:
+        raise InstallerError(f"{checkout} has symlinks to paths outside its tree: {', '.join(bad[:5])}")
     print(f"ok: {checkout} is {ch.repo} {ch.channel} at {got[:12]} (generation {ch.generation})")
     return OK
 
@@ -182,21 +188,27 @@ def _clear(dest: Path, keep_dir: bool) -> None:
 
 def cmd_checkout(args) -> int:
     ch = manifest.resolve(_source(args), args.repo, args.channel)
-    if not BRANCH.fullmatch(args.branch) or ".." in args.branch:
-        raise InstallerError(f"--branch {args.branch!r} is not a branch name")
+    gitsafe.check_branch_name(args.branch)
     dest = Path(args.dest)
     missing = not os.path.lexists(dest)
     empty = not missing and dest.is_dir() and not dest.is_symlink() and not any(dest.iterdir())
     if not (missing or empty):
         _top_level(str(dest))
         _origin_is(str(dest), args.remote)
+        if _git(str(dest), "rev-parse", "--is-shallow-repository").stdout.strip() != "false":
+            raise InstallerError(f"{dest} is a shallow clone; qqinstall needs a full one: remove it and run again")
         _never_backwards(str(dest), ch)
         if _local_changes(str(dest)):
             print(f"{dest} has local changes; leaving it as it is", file=sys.stderr)
             return MISMATCH
+        if _git(str(dest), "fetch", "--quiet", "--no-tags", "origin").returncode:
+            raise InstallerError(f"could not fetch from {args.remote}")
         return _put_on(dest, ch, args)
+    if _git(None, "clone", "--quiet", "--no-checkout", "--no-tags", "--", args.remote, str(dest)).returncode:
+        raise InstallerError(f"could not clone {args.remote} into {dest}")
+    # From here dest is this run's clone; if the rest fails, undo it so the next run starts fresh.
     try:
-        rc = _put_on(dest, ch, args, clone=True)
+        rc = _put_on(dest, ch, args)
     except BaseException:
         _clear(dest, keep_dir=empty)
         raise
@@ -205,13 +217,8 @@ def cmd_checkout(args) -> int:
     return rc
 
 
-def _put_on(dest: Path, ch: Channel, args, clone: bool = False) -> int:
+def _put_on(dest: Path, ch: Channel, args) -> int:
     d = str(dest)
-    if clone:
-        if _git(None, "clone", "--quiet", "--no-checkout", "--no-tags", "--", args.remote, d).returncode:
-            raise InstallerError(f"could not clone {args.remote} into {dest}")
-    elif _git(d, "fetch", "--quiet", "--no-tags", "origin").returncode:
-        raise InstallerError(f"could not fetch from {args.remote}")
     # The commit by its id, never a branch or tag name the remote could point elsewhere.
     want = f"{ch.commit}^{{commit}}"
     if _git(d, "cat-file", "-e", want).returncode:
@@ -219,16 +226,14 @@ def _put_on(dest: Path, ch: Channel, args, clone: bool = False) -> int:
         if _git(d, "cat-file", "-e", want).returncode:
             raise InstallerError(f"{args.remote} does not have {ch.repo} {ch.channel}'s commit {ch.commit[:12]}")
     # ...and only a commit on the reviewed branch, so a forged manifest cannot name any object the
-    # remote serves by id (an unmerged branch, a fork's commit).
-    tip = "refs/qqinstall/branch"
-    if _git(d, "fetch", "--quiet", "--no-tags", "origin", f"+refs/heads/{args.branch}:{tip}").returncode:
-        raise InstallerError(f"could not fetch {args.branch} from {args.remote}")
-    on = _git(d, "merge-base", "--is-ancestor", ch.commit, tip).returncode
-    if on == 1:
+    # remote serves by id (an unmerged branch, a fork's commit). Asked of the remote, not of dest.
+    if not gitsafe.on_branch(ch.commit, args.remote, args.branch):
         raise InstallerError(f"{ch.repo} {ch.channel}'s commit {ch.commit[:12]} is not on {args.remote} "
                              f"{args.branch}; refusing it")
-    if on != 0:
-        raise InstallerError(f"could not check that {ch.commit[:12]} is on {args.branch}")
+    bad = _bad_links(d, ch.commit)
+    if bad:
+        raise InstallerError(f"{ch.repo} {ch.channel}'s commit {ch.commit[:12]} has symlinks to paths "
+                             f"outside its tree: {', '.join(bad[:5])}; refusing it")
     if _git(d, "checkout", "--quiet", "--detach", ch.commit).returncode:
         raise InstallerError(f"could not check out {ch.commit[:12]} in {dest}")
     rc = check(d, ch, args.remote)
