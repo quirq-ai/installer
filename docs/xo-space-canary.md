@@ -20,9 +20,16 @@ In a fresh directory on the test machine (a test install must be its own checkou
 curl -fsSL https://quirq.ai/install | QUIRQ_SOURCE_REF=channels/canary sh
 ```
 
-The variable goes on `sh`, not on `curl`: the bootstrap behind the short URL reads it (xo-space's
-`tests/install_sh_harness.sh` checks the banner prints it that way). Or, from an xo-space checkout
-of the same version: `QUIRQ_SOURCE_REF=channels/canary ./install.sh`.
+The variable goes on `sh`, not on `curl`. Per xo-space's INSTALLATION.md the bootstrap behind the
+short URL downloads `install.sh` and runs it under bash, so the variable reaches install.sh, and
+install.sh's own restart banner prints the command this way. The bootstrap's source is not in the
+xo-space repo and could not be read from here, so which ref it fetches `install.sh` from is
+unverified (inferred: `main`). TODO(expert): confirm against the served bootstrap.
+
+Do **not** run `QUIRQ_SOURCE_REF=channels/canary ./install.sh` from inside an xo-space checkout:
+install.sh then runs that checkout in place and never fetches, whatever the variable says. Without
+the short URL, pipe the script from a fresh directory so it takes the managed path:
+`QUIRQ_SOURCE_REF=channels/canary bash < /path/to/install.sh`.
 
 To update, run the same command again. Each run moves the install to whatever canary names now,
 including back to an older commit after a rollback.
@@ -39,12 +46,17 @@ qqinstall verify --repo xo-space --channel canary --checkout ./xo-space
 
 - **A test install must be its own checkout.** install.sh never moves a clean checkout that is on
   another branch: an existing install on `main` stays on `main` even with
-  `QUIRQ_SOURCE_REF=channels/canary` set. Use a fresh directory, or `QUIRQ_APP_DIR`.
-- **Update by re-running install.sh, not the in-app updater, to follow rollbacks.** The in-app
-  updater (`services/cowork_agent/self_update.py`) follows the checkout's current branch, so a
-  canary install updates to newer canaries, but it only fast-forwards: after a rollback it reports
-  the branches as diverged and does nothing. Re-running install.sh resets to the rolled-back
-  commit. (Read from the code at the pinned xo-space commit, not exercised by the drill.)
+  `QUIRQ_SOURCE_REF=channels/canary` set, and install.sh then **starts the server on `main`
+  anyway**, after printing "leaving it as is". Use a fresh directory, or `QUIRQ_APP_DIR`, and
+  check with `qqinstall verify`.
+- **Update by re-running install.sh, never the in-app updaters, to follow rollbacks.** Both in-app
+  paths follow the checkout's current branch, so a canary install picks up newer canaries, but they
+  only fast-forward and stay **silently** on a rolled-back commit: the Setup tab's status
+  (`services/cowork_agent/self_update.py`, `check_update_status`) reports "up to date", applying
+  reports "diverged", and `POST /app/update` (`cowork-update.sh`, `git pull --ff-only`) says
+  "Already up to date" and exits 0. Re-running install.sh resets to the rolled-back commit.
+  (Read from the code at the pinned xo-space commit and checked by the PR reviewer against the
+  real module; the drill covers install.sh only.)
 - **Local edits stop updates.** install.sh skips the update for a checkout with local changes;
   `qqinstall verify` exits 1 for one.
 - **The installer script itself** is whatever the bootstrap serves, not necessarily canary's copy;

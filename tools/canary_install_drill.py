@@ -32,6 +32,9 @@ from pathlib import Path
 from qqrelease import backends, channels, cli, config, executor
 from qqrelease.store import Store
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hermetic import isolate  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "xo-space"     # the consumer under test; its name is also install.sh's checkout directory
 CHANNEL = "canary"
@@ -96,6 +99,7 @@ def main(argv=None) -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
+        isolate(tmp)
         lib = tmp / "lib.sh"
         lib.write_text(install_sh(args.install_sh))
         state = tmp / "state"
