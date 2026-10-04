@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from dataclasses import asdict
@@ -31,13 +32,17 @@ def _source(args) -> str:
     return manifest.source_at(args.at) if args.at else (args.source or manifest.DEFAULT_SOURCE)
 
 
-# The checkout is not trusted: never let its config run code (fsmonitor) while we inspect it.
+# Defence in depth only: fsmonitor and hooks off. verify still trusts the checkout's own .git
+# (its filters, excludes and core.fileMode can run code or hide changes), so it checks an install
+# its operator controls, not a hostile tree. Inherited GIT_* variables are dropped so git looks at
+# `checkout`, not wherever GIT_DIR points.
 GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]
 
 
 def _git(checkout: str, *argv: str) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
-        return subprocess.run(["git", *GIT_SAFE, "-C", checkout, *argv], capture_output=True, text=True)
+        return subprocess.run(["git", *GIT_SAFE, "-C", checkout, *argv], capture_output=True, text=True, env=env)
     except OSError as e:
         raise InstallerError(f"could not run git: {e}") from None
 

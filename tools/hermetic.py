@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 def isolate(home: Path) -> None:
+    """Changes os.environ for the rest of the process: for one-shot drill scripts only."""
     for k in [k for k in os.environ if k.startswith("GIT_")]:
         del os.environ[k]
     os.environ["GIT_CONFIG_GLOBAL"] = os.devnull

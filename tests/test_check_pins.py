@@ -30,6 +30,10 @@ def test_accepts_pinned(tmp_path, line):
 @pytest.mark.parametrize("line", [
     "      - uses: actions/checkout@v4",
     "      - uses: actions/checkout@main",
+    "      - name: it's  # note: |\n        uses: actions/checkout@main",
+    "      - run: echo don't # x: >\n        uses: actions/checkout@main",
+    '      - {name: a, "u\\x73es": actions/checkout@main}',
+    "      - uses: a/b@%s\n        uses: actions/checkout@main" % SHA,
     "      - uses: actions/checkout",
     f"      - uses: actions/checkout@{SHA.upper()}",
     f"      - uses: actions/checkout@{SHA}#v4",
@@ -40,6 +44,20 @@ def test_accepts_pinned(tmp_path, line):
 ])
 def test_refuses_unpinned_or_unreadable(tmp_path, line):
     assert problems(tmp_path, f"steps:\n{line}\n")
+
+
+def test_unparseable_fails(tmp_path):
+    assert problems(tmp_path, "steps: [\n")
+
+
+def test_symlinked_local_actions(tmp_path):
+    (tmp_path / ".qq" / "infra-config" / "act").mkdir(parents=True)
+    (tmp_path / "act").symlink_to(tmp_path / ".qq" / "infra-config" / "act")
+    assert problems(tmp_path, "steps:\n  - uses: ./act\n")
+    out = tmp_path.parent / (tmp_path.name + "-outside")
+    out.mkdir()
+    (tmp_path / "ext").symlink_to(out)
+    assert any("./ext" in p for p in problems(tmp_path, "steps:\n  - uses: ./ext\n"))
 
 
 def test_ignores_run_blocks(tmp_path):
@@ -57,6 +75,7 @@ def test_this_repo_is_clean():
 
 @pytest.mark.parametrize("text", [
     "steps:\n  - name: x  # see: |\n    uses: actions/checkout@main\n",
+    'steps: [{"u\\x73es": actions/checkout@main}]\n',
     "steps:\n  - ? uses\n    : actions/checkout@main\n",
     'steps:\n  - "u\\x73es": actions/checkout@main\n',
     "steps:\n  - uses: ./.qq/infra-config/act\n",

@@ -80,3 +80,11 @@ def test_unexpected_errors_exit_2(write, capsys, monkeypatch):
         raise RuntimeError("x")
     monkeypatch.setattr(cli.manifest, "resolve", boom)
     assert run(capsys, "resolve", "--repo", "app", "--channel", "canary", "--source", write(doc()))[0] == cli.ERROR
+
+
+def test_verify_ignores_inherited_git_dir(write, checkout, tmp_path, capsys, monkeypatch):
+    d, sha = checkout
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere" / ".git"))
+    src = write(doc(app={"canary": entry(commit=sha)}))
+    assert run(capsys, "verify", "--repo", "app", "--channel", "canary", "--source", src,
+               "--checkout", str(d))[0] == cli.OK

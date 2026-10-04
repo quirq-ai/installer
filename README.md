@@ -38,8 +38,9 @@ every resolve exits `3`.
 
 **Limits.** `verify` checks the checkout's top-level commit and that its tree has no tracked,
 untracked (non-ignored) or hidden (skip-worktree, assume-unchanged) changes. It does not check the
-digest (that is for artifact installs), which remote the checkout came from, or submodules, and it
-inspects the checkout with git hooks and fsmonitor turned off. The default URL is served through
+digest (that is for artifact installs), which remote the checkout came from, or submodules, and it trusts
+the checkout's own `.git` (its filters, excludes and `core.fileMode` can hide changes or run code),
+so it checks an install you control, not a hostile tree. The default URL is served through
 GitHub's CDN, which can lag a channel move by a few minutes; use `--at <release-state commit>`
 when a read must be exact. Exit `3` also covers a 404 from a renamed or private release repo, so
 "not published" lasting past the first canary means look at the URL.
