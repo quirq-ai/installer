@@ -26,6 +26,9 @@ from pathlib import Path
 from qqrelease import backends, channels, cli, config, executor
 from qqrelease.store import Store
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hermetic import isolate  # noqa: E402
+
 CHANNEL = "canary"
 
 
@@ -62,6 +65,7 @@ def main(argv=None) -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
+        isolate(tmp)
         state = tmp / "state"
         state.mkdir()
         git("init", "-q", "-b", "release-state", cwd=state)
