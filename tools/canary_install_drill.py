@@ -1,19 +1,27 @@
-"""V0-INS-02 done-when, offline half: a test install follows `channels/canary`.
+"""V0-INS-02 done-when, offline half: a test install follows canary, checked before anything runs.
 
-Runs xo-space's real `install.sh` (fetched at the commit pinned in pins.toml and checked against
-its sha256) with `QUIRQ_SOURCE_REF=channels/canary`, against a local stand-in for the repo whose
-`channels/canary` branch is moved by release's own executor (the `contract` extra, pinned). Only
-install.sh's clone/update step runs (`fetch_repo`, the same functions-only sourcing xo-space's own
-tests/install_sh_harness.sh uses): no uv, venv or server.
+The documented flow (docs/xo-space-canary.md) is: `qqinstall checkout` clones or updates the
+install, detaches it at exactly the commit channels.json names and verifies it; only then does the
+operator run that checkout's own `./install.sh`, which runs a checkout in place and never fetches.
 
-1. canary is promoted to commit 1; a fresh test install clones it.
-2. canary is promoted to commit 2; the install is stale (`qqinstall verify` exits 1) until
-   install.sh runs again, then it is commit 2.
-3. canary is rolled back; running install.sh again takes the install back to commit 1.
-4. an existing install on `main` is left alone: a test install must be its own checkout.
+This drill runs that flow against a local stand-in for xo-space: a repo holding xo-space's real
+`install.sh` (fetched at the commit pinned in pins.toml and checked against its sha256) beside a
+`server.py` and `requirements.txt`. release's own executor (the pinned `contract` extra, `local`
+backend) moves canary and writes channels.json. It checks:
 
-After every step `qqinstall verify` (exit codes only) compares the checkout with what the
-published channels.json names.
+1. a fresh `qqinstall checkout` lands on canary's commit 1 (exit 0), and the checkout's own
+   install.sh would run it in place (`resolve_repo_dir` gives MANAGED_CHECKOUT=0, so no git runs);
+2. canary is promoted to commit 2: the install is stale (`verify` exits 1) until `checkout` runs
+   again, then it is commit 2;
+3. a tag and a `refs/channels/canary` ref planted at an unreviewed commit change nothing: checkout
+   still lands on the manifest's commit. For contrast it shows the earlier
+   `QUIRQ_SOURCE_REF=channels/canary` flow (install.sh's own `fetch_repo`) does install the planted
+   commit, which is why that flow is no longer documented;
+4. canary is rolled back: `checkout` takes the install back to commit 1;
+5. a checkout with local changes is left alone (exit 1).
+
+What it does not cover: the rest of install.sh (uv, venv, the server), the bootstrap behind the
+short URL, and GitHub itself (release's github backend, raw.githubusercontent.com).
 
     python tools/canary_install_drill.py --config .qq/infra-config [--install-sh PATH]
 """
@@ -46,7 +54,7 @@ def git(*args, cwd) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def install_sh(path: str | None) -> str:
+def install_sh(path: str | None) -> bytes:
     pin = tomllib.loads((ROOT / "pins.toml").read_text())[REPO]
     if path:
         data = Path(path).read_bytes()
@@ -57,30 +65,19 @@ def install_sh(path: str | None) -> str:
     got = hashlib.sha256(data).hexdigest()
     if got != pin["install_sh_sha256"]:
         raise SystemExit(f"install.sh sha256 {got} is not the pinned {pin['install_sh_sha256']}")
-    text = data.decode().replace("\r", "")
-    lines = text.rstrip("\n").split("\n")
+    return data
+
+
+def functions_only(script: bytes) -> str:
+    """install.sh without its final `main "$@"`, as xo-space's own tests/install_sh_harness.sh does."""
+    lines = script.decode().replace("\r", "").rstrip("\n").split("\n")
     if lines[-1].rstrip() != 'main "$@"':
         raise SystemExit(f"install.sh no longer ends in `main \"$@\"`; update the drill: {lines[-1]!r}")
-    return "\n".join(lines[:-1]) + "\n"     # functions only, as xo-space's own harness does
+    return "\n".join(lines[:-1]) + "\n"
 
 
-def run_install(lib: Path, app_dir: Path, upstream: Path, ref: str | None) -> int:
-    """install.sh's clone-or-update step, as a managed install with QUIRQ_SOURCE_REF set."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("QUIRQ_")}
-    env["QUIRQ_SOURCE_REPO"] = f"file://{upstream}"
-    if ref is not None:
-        env["QUIRQ_SOURCE_REF"] = ref
-    script = f'source "{lib}"; REPO_DIR="{app_dir}"; MANAGED_CHECKOUT=1; fetch_repo'
-    p = subprocess.run(["bash", "-c", script], cwd=lib.parent, env=env, capture_output=True, text=True)
-    if p.returncode != 0:
-        print(p.stdout + p.stderr, file=sys.stderr)
-    return p.returncode
-
-
-def verify(manifest: Path, checkout: Path) -> int:
-    return subprocess.run([sys.executable, "-m", "qqinstall", "verify", "--repo", REPO, "--channel", CHANNEL,
-                           "--source", str(manifest), "--checkout", str(checkout)],
-                          capture_output=True, text=True).returncode
+def qqinstall(*argv) -> int:
+    return subprocess.run([sys.executable, "-m", "qqinstall", *argv], capture_output=True, text=True).returncode
 
 
 def main(argv=None) -> int:
@@ -90,6 +87,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     cfg = config.load(Path(args.config))
     lkgr = config.lkgr_ref(cfg)
+    script = install_sh(args.install_sh)
     failures = []
 
     def check(what: str, ok: bool):
@@ -100,8 +98,6 @@ def main(argv=None) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         isolate(tmp)
-        lib = tmp / "lib.sh"
-        lib.write_text(install_sh(args.install_sh))
         state = tmp / "state"
         state.mkdir()
         git("init", "-q", "-b", "release-state", cwd=state)
@@ -110,6 +106,7 @@ def main(argv=None) -> int:
         upstream = targets / REPO
         upstream.mkdir(parents=True)
         git("init", "-q", "-b", "main", cwd=upstream)
+        (upstream / "install.sh").write_bytes(script)
         shas = []
         for i in range(2):
             (upstream / "server.py").write_text(f"# version {i + 1}\n")
@@ -117,50 +114,82 @@ def main(argv=None) -> int:
             git("add", ".", cwd=upstream)
             git(*GIT_ID, "commit", "-q", "-m", f"commit {i + 1}", cwd=upstream)
             shas.append(git("rev-parse", "HEAD", cwd=upstream))
+        git("checkout", "-q", "-b", "unreviewed", cwd=upstream)
+        (upstream / "server.py").write_text("# unreviewed\n")
+        git(*GIT_ID, "commit", "-q", "-am", "unreviewed", cwd=upstream)
+        evil = git("rev-parse", "HEAD", cwd=upstream)
+        git("checkout", "-q", "main", cwd=upstream)
+
         mirror = backends.load("local", target_root=targets)
         manifest = state / channels.MANIFEST
+        remote = f"file://{upstream}"
+        app = tmp / "test-env" / REPO
+        app.parent.mkdir()
+        sel = ["--repo", REPO, "--channel", CHANNEL, "--source", str(manifest)]
 
         def promote(sha: str):
             executor.move(store, mirror, executor.plan(store, "advance", REPO, lkgr, sha))
             channels.apply(store, mirror, channels.plan_promote(cfg, store, REPO, CHANNEL, sha,
                                                                 "sha256:" + hashlib.sha256(sha.encode()).hexdigest()))
 
-        app = tmp / "test-env" / REPO
-        app.parent.mkdir()
+        def checkout() -> int:
+            return qqinstall("checkout", *sel, "--remote", remote, "--dest", str(app))
+
+        def verify() -> int:
+            return qqinstall("verify", *sel, "--remote", remote, "--checkout", str(app))
+
+        def head() -> str:
+            return git("rev-parse", "HEAD", cwd=app)
 
         promote(shas[0])
-        rc = run_install(lib, app, upstream, REF)
-        check(f"fresh test install with QUIRQ_SOURCE_REF={REF} (exit {rc})", rc == 0)
-        check("…is canary's commit 1 (qqinstall verify exit 0)", verify(manifest, app) == 0)
-        check("…on the channel branch", git("rev-parse", "--abbrev-ref", "HEAD", cwd=app) == REF)
+        rc = checkout()
+        check(f"1. fresh qqinstall checkout (exit {rc}) is canary's commit 1", rc == 0 and head() == shas[0])
+        lib = app / ".qq-drill-install-lib.sh"   # beside server.py, so install.sh sees itself in a checkout
+        lib.write_text(functions_only((app / "install.sh").read_bytes()))
+        mode = subprocess.run(["bash", "-c", f'source "{lib}"; resolve_repo_dir; printf "%s|%s" "$MANAGED_CHECKOUT" "$REPO_DIR"'],
+                              cwd=app, capture_output=True, text=True,
+                              env={k: v for k, v in os.environ.items() if not k.startswith("QUIRQ_")})
+        lib.unlink()
+        check(f"   the checkout's own install.sh runs it in place, no git ({mode.stdout!r})",
+              mode.returncode == 0 and mode.stdout == f"0|{app}")
 
         promote(shas[1])
-        check("canary promoted to commit 2: the install is stale (verify exit 1)", verify(manifest, app) == 1)
-        rc = run_install(lib, app, upstream, REF)
-        check(f"install.sh run again (exit {rc}) -> commit 2 (verify exit 0)", rc == 0 and verify(manifest, app) == 0)
+        check("2. canary promoted to commit 2: the install is stale (verify exit 1)", verify() == 1)
+        rc = checkout()
+        check(f"   checkout again (exit {rc}) -> commit 2", rc == 0 and head() == shas[1] and verify() == 0)
+
+        git("tag", REF, evil, cwd=upstream)
+        git("update-ref", f"refs/{REF}", evil, cwd=upstream)
+        rc = checkout()
+        check(f"3. a tag and refs/{REF} planted at an unreviewed commit: checkout (exit {rc}) stays on commit 2",
+              rc == 0 and head() == shas[1])
+        old = tmp / "old-flow" / REPO
+        old.parent.mkdir()
+        (tmp / "lib.sh").write_text(functions_only(script))
+        env = {k: v for k, v in os.environ.items() if not k.startswith("QUIRQ_")}
+        env.update(QUIRQ_SOURCE_REPO=remote, QUIRQ_SOURCE_REF=REF)
+        for _ in range(2):   # first run clones the branch, the second updates by name
+            subprocess.run(["bash", "-c", f'source "{tmp / "lib.sh"}"; REPO_DIR="{old}"; MANAGED_CHECKOUT=1; fetch_repo'],
+                           cwd=tmp, env=env, capture_output=True, text=True)
+        check("   for contrast, the QUIRQ_SOURCE_REF flow's update installs the planted commit",
+              git("rev-parse", "HEAD", cwd=old) == evil)
 
         rc = cli.main(["channel", "rollback", "--config", args.config, "--state", str(state), "--backend", "local",
                        "--target-root", str(targets), "--repo", REPO, "--channel", CHANNEL, "--from", shas[1],
                        "--reason", "installer canary drill"])
-        check(f"release rolled canary back (exit {rc})", rc == 0)
-        rc = run_install(lib, app, upstream, REF)
-        check(f"install.sh run again (exit {rc}) -> back to commit 1 (verify exit 0)",
-              rc == 0 and verify(manifest, app) == 0 and git("rev-parse", "HEAD", cwd=app) == shas[0])
+        check(f"4. release rolled canary back (exit {rc})", rc == 0)
+        rc = checkout()
+        check(f"   checkout again (exit {rc}) -> back to commit 1", rc == 0 and head() == shas[0] and verify() == 0)
 
-        main_install = tmp / "user-env" / REPO
-        main_install.parent.mkdir()
-        rc = run_install(lib, main_install, upstream, None)
-        before = git("rev-parse", "HEAD", cwd=main_install)
-        rc2 = run_install(lib, main_install, upstream, REF)
-        check("an install on main is left alone when QUIRQ_SOURCE_REF names the channel",
-              rc == 0 and rc2 == 0 and git("rev-parse", "--abbrev-ref", "HEAD", cwd=main_install) == "main"
-              and git("rev-parse", "HEAD", cwd=main_install) == before)
+        (app / "server.py").write_text("# edited on the test machine\n")
+        rc = checkout()
+        check(f"5. a checkout with local changes is left alone (exit {rc})", rc == 1 and head() == shas[0])
     if failures:
         return 1
-    print(f"ok: a test install with QUIRQ_SOURCE_REF={REF} followed the channel through two promotions "
-          "and a rollback, with no xo-space code change")
+    print("ok: a test install followed canary through two promotions and a rollback, each checked before "
+          "it could run, and planted refs changed nothing; no xo-space code change")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(argv=None))

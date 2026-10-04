@@ -141,3 +141,19 @@ def test_pins_agree_with_pyproject():
     commit = tomllib.loads((root / "pins.toml").read_text())["release"]["commit"]
     extra = tomllib.loads((root / "pyproject.toml").read_text())["project"]["optional-dependencies"]["contract"]
     assert extra == [f"qqrelease @ git+https://github.com/quirq-ai/release@{commit}"]
+
+
+def test_ci_requirements_agree_with_pyproject():
+    import re
+    import tomllib
+    from pathlib import Path
+    root = Path(__file__).parent.parent
+    py = tomllib.loads((root / "pyproject.toml").read_text())
+    lines = [ln.split("#")[0].strip() for ln in (root / "requirements-ci.in").read_text().splitlines()]
+    want = {ln for ln in lines if ln}
+    assert set(py["project"]["optional-dependencies"]["test"]) <= want
+    assert set(py["build-system"]["requires"]) <= want
+    lock = (root / "requirements-ci.txt").read_text()
+    for req in want:
+        name, ver = req.split("==")
+        assert re.search(rf"^{re.escape(name)}=={re.escape(ver)} ", lock, re.M | re.I), req
