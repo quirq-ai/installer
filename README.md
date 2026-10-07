@@ -34,9 +34,9 @@ qqinstall show                                                      # every chan
 Exit codes, which scripts should decide on (never on the text): `0` resolved (or, for `checkout`
 and `verify`, the checkout is exactly the channel's commit with no local changes), `1` mismatch or
 local changes, `2` error (unreadable or invalid manifest, bad arguments, broken checkout or remote),
-`3` not published yet (no manifest, or it does not name that repo and channel). Treat anything but `0` as "not verified": Python itself exits `1` if
-qqinstall cannot start. The manifest appears only after release's first channel move. Release published it with the first canary on 2026-10-05,
-so `resolve --repo xo-space --channel canary` (and innernet) answer `0` today; website has no
+`3` not published yet (no manifest, or it does not name that repo and channel). Treat anything but
+`0` as "not verified": Python itself exits `1` if qqinstall cannot start. The manifest appears only
+after release's first channel move. Release published it with the first canary on 2026-10-05, so `resolve --repo xo-space --channel canary` (and innernet) answer `0` today; website has no
 canary channel and answers `3`.
 
 `checkout` clones or fetches, then detaches the checkout at the manifest's commit by its id (never
@@ -76,9 +76,11 @@ unexpected exits `2`, never `1`. One bad entry anywhere and the whole file is re
 **What it trusts.** The commit and digest come from the manifest, never from the artifact or
 checkout being checked. The manifest is trusted because only release's executor should write
 `release-state`. TODO(suraj): today release pushes `release-state` with its workflows'
-`GITHUB_TOKEN`, so a ruleset cannot tell the executor from any other workflow in release. release's
-writer jobs can already push with the executor App's token (release #16), but they do not
-push as the App yet; it also needs a ruleset on `release-state` whose only bypass is that App. Until
+`GITHUB_TOKEN`, so a ruleset cannot tell the executor from any other workflow in release. The App
+(`quirq-release-executor`) exists, and release #16 wired its writer jobs to push with its token, but
+they do not act as it yet: until suraj runs "command 2" (which sets the App's client ID in release),
+they push with `GITHUB_TOKEN`, and release-state records `skipped: no release executor identity`.
+It also needs a ruleset on `release-state` whose only bypass is that App (open gate PR #27). Until
 then anyone with push on quirq-ai/release can change what a channel resolves to.
 
 `tools/contract_check.py` is the done-when: release's own code, at the commit in `pins.toml`, ships
