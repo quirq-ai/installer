@@ -89,7 +89,7 @@ inside the checkout the first project lands in the checkout and every later `che
   its commit.
 - The trust root is `channels.json` on release's `release-state` branch. TODO(suraj): until only
   the release executor can push `release-state` (release pushes it with the workflow's
-  `GITHUB_TOKEN` today, so a ruleset cannot single the executor out; the audit routes this to
+  `GITHUB_TOKEN` today, since release does not push as its executor App yet, so a ruleset cannot single the executor out; the audit routes this to
   release), anyone with push on quirq-ai/release can change what canary resolves to.
 - Reads go through GitHub's CDN and can lag a channel move by a few minutes;
   `--at <release-state commit>` reads a fixed version and is refused unless that commit is on
@@ -113,8 +113,9 @@ against a local stand-in repo holding xo-space's real `install.sh` (pinned commi
 It does not run the rest of install.sh (uv, venv, server), the bootstrap, or anything on GitHub
 (release's github backend, raw.githubusercontent.com).
 
-The live half, a test install in the canary environment following the channel, waits on:
+The live half, a test install in the canary environment following the channel, waits on the
+items below. (Release's first canary promotion, on 2026-10-05, published `channels.json`; the
+`resolve` half works live.)
 
-- V0-REL-03: release's first canary promotion, which publishes `channels.json`.
 - TODO(suraj): name the canary test environment (which machines).
 - TODO(suraj): protect `release-state` so only the release executor can push it (see above).
